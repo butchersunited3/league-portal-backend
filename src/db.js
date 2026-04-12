@@ -173,6 +173,43 @@ async function createTables() {
       CONSTRAINT fk_submissions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS payment_dues (
+      id CHAR(36) PRIMARY KEY,
+      title VARCHAR(255) NOT NULL,
+      description TEXT,
+      amount DECIMAL(10, 2) NOT NULL,
+      currency VARCHAR(10) NOT NULL DEFAULT 'INR',
+      due_date DATETIME NULL DEFAULT NULL,
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      created_by CHAR(36) NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT fk_payment_dues_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS payments (
+      id CHAR(36) PRIMARY KEY,
+      due_id CHAR(36) NOT NULL,
+      owner_id CHAR(36) NOT NULL,
+      status ENUM('pending', 'paid', 'failed', 'cancelled', 'refunded') NOT NULL DEFAULT 'pending',
+      amount DECIMAL(10, 2) NOT NULL,
+      currency VARCHAR(10) NOT NULL DEFAULT 'INR',
+      gateway VARCHAR(50) NOT NULL DEFAULT 'razorpay',
+      gateway_order_id VARCHAR(255) NULL,
+      gateway_payment_id VARCHAR(255) NULL,
+      gateway_signature VARCHAR(255) NULL,
+      paid_at TIMESTAMP NULL DEFAULT NULL,
+      failure_reason TEXT NULL,
+      notes TEXT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      CONSTRAINT fk_payments_due FOREIGN KEY (due_id) REFERENCES payment_dues(id) ON DELETE CASCADE,
+      CONSTRAINT fk_payments_owner FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
 }
 
 async function ensureSubmissionColumns() {
@@ -193,6 +230,96 @@ async function ensureSubmissionColumns() {
 
   if (!columnNames.has('approved_by')) {
     await pool.query('ALTER TABLE submissions ADD COLUMN approved_by CHAR(36) NULL');
+  }
+}
+
+async function ensurePaymentDueColumns() {
+  const [columns] = await pool.query('SHOW COLUMNS FROM payment_dues');
+  const columnNames = new Set(columns.map((column) => column.Field));
+
+  if (!columnNames.has('description')) {
+    await pool.query('ALTER TABLE payment_dues ADD COLUMN description TEXT NULL');
+  }
+
+  if (!columnNames.has('amount')) {
+    await pool.query("ALTER TABLE payment_dues ADD COLUMN amount DECIMAL(10, 2) NOT NULL DEFAULT 0.00");
+  } else {
+    await pool.query('ALTER TABLE payment_dues MODIFY COLUMN amount DECIMAL(10, 2) NOT NULL');
+  }
+
+  if (!columnNames.has('currency')) {
+    await pool.query("ALTER TABLE payment_dues ADD COLUMN currency VARCHAR(10) NOT NULL DEFAULT 'INR'");
+  }
+
+  if (!columnNames.has('due_date')) {
+    await pool.query('ALTER TABLE payment_dues ADD COLUMN due_date DATETIME NULL DEFAULT NULL');
+  }
+
+  if (!columnNames.has('is_active')) {
+    await pool.query('ALTER TABLE payment_dues ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1');
+  }
+
+  if (!columnNames.has('created_by')) {
+    await pool.query('ALTER TABLE payment_dues ADD COLUMN created_by CHAR(36) NULL');
+  }
+}
+
+async function ensurePaymentColumns() {
+  const [columns] = await pool.query('SHOW COLUMNS FROM payments');
+  const columnNames = new Set(columns.map((column) => column.Field));
+
+  if (!columnNames.has('status')) {
+    await pool.query(
+      "ALTER TABLE payments ADD COLUMN status ENUM('pending', 'paid', 'failed', 'cancelled', 'refunded') NOT NULL DEFAULT 'pending'",
+    );
+  } else {
+    await pool.query(
+      "ALTER TABLE payments MODIFY COLUMN status ENUM('pending', 'paid', 'failed', 'cancelled', 'refunded') NOT NULL DEFAULT 'pending'",
+    );
+  }
+
+  if (!columnNames.has('amount')) {
+    await pool.query("ALTER TABLE payments ADD COLUMN amount DECIMAL(10, 2) NOT NULL DEFAULT 0.00");
+  } else {
+    await pool.query('ALTER TABLE payments MODIFY COLUMN amount DECIMAL(10, 2) NOT NULL');
+  }
+
+  if (!columnNames.has('currency')) {
+    await pool.query("ALTER TABLE payments ADD COLUMN currency VARCHAR(10) NOT NULL DEFAULT 'INR'");
+  }
+
+  if (!columnNames.has('gateway')) {
+    await pool.query("ALTER TABLE payments ADD COLUMN gateway VARCHAR(50) NOT NULL DEFAULT 'razorpay'");
+  }
+
+  if (!columnNames.has('gateway_order_id')) {
+    await pool.query('ALTER TABLE payments ADD COLUMN gateway_order_id VARCHAR(255) NULL');
+  }
+
+  if (!columnNames.has('gateway_payment_id')) {
+    await pool.query('ALTER TABLE payments ADD COLUMN gateway_payment_id VARCHAR(255) NULL');
+  }
+
+  if (!columnNames.has('gateway_signature')) {
+    await pool.query('ALTER TABLE payments ADD COLUMN gateway_signature VARCHAR(255) NULL');
+  }
+
+  if (!columnNames.has('paid_at')) {
+    await pool.query('ALTER TABLE payments ADD COLUMN paid_at TIMESTAMP NULL DEFAULT NULL');
+  }
+
+  if (!columnNames.has('failure_reason')) {
+    await pool.query('ALTER TABLE payments ADD COLUMN failure_reason TEXT NULL');
+  }
+
+  if (!columnNames.has('notes')) {
+    await pool.query('ALTER TABLE payments ADD COLUMN notes TEXT NULL');
+  }
+
+  if (!columnNames.has('updated_at')) {
+    await pool.query(
+      'ALTER TABLE payments ADD COLUMN updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP',
+    );
   }
 }
 
@@ -272,6 +399,8 @@ export async function initDatabase() {
 
   await createTables();
   await ensureSubmissionColumns();
+  await ensurePaymentDueColumns();
+  await ensurePaymentColumns();
   await seedDefaults();
 }
 

@@ -24,6 +24,12 @@ npm run dev
 
 Backend default URL: `http://localhost:4000`
 
+For payments, also set:
+
+- `PAYMENT_CURRENCY`
+- `RAZORPAY_KEY_ID`
+- `RAZORPAY_KEY_SECRET`
+
 ## 4) API endpoints used by frontend
 
 - `POST /api/auth/register`
@@ -31,10 +37,19 @@ Backend default URL: `http://localhost:4000`
 - `GET /api/auth/me`
 - `GET /api/admin/stats`
 - `GET /api/admin/users`
+- `GET /api/admin/payment-dues`
+- `POST /api/admin/payment-dues`
+- `PUT /api/admin/payment-dues/:id`
+- `GET /api/admin/payments`
+- `PUT /api/admin/payments/:id/status`
 - `GET /api/forms`
 - `GET /api/forms/:id`
 - `POST /api/forms`
 - `PUT /api/forms/:id`
 - `DELETE /api/forms/:id`
+- `GET /api/owner/payments`
+- `POST /api/owner/payments/orders`
+- `POST /api/owner/payments/verify`
+- `POST /api/owner/payments/:id/status`
 - `POST /api/submissions`
 - `GET /api/submissions`
