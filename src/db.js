@@ -59,36 +59,39 @@ const starterFormSchema = {
         {
           id: 'mcq1',
           type: 'radio',
-          label: "Your team is losing badly, and you're personally having a poor game. What do you do?",
+          label:
+            "Managing Star Egos & Team Chemistry: Your top-performing player is a highly skilled but arrogant athlete. They are consistently winning their matches but are verbally berating their doubles partner on the court and ignoring the strategic game plans you've set. The partner is losing confidence fast. How do you intervene?",
           options: [
-            'A. Keep pushing myself and encourage teammates to stay focused',
-            'B. Focus only on fixing my own mistakes quietly',
-            'C. Feel frustrated and wait for the game to end',
-            'D. Try riskier plays to quickly change the outcome',
+            'A. Bench the star player for the next match to send a clear message that team culture and respect trump individual talent',
+            'B. Pull the star player aside privately and tell them to tone it down, but ultimately let them keep playing their way as long as they are securing wins',
+            "C. Call a meeting with both players, mediate the conflict, and adjust the strategy to better suit the star player's aggressive style so they feel supported",
+            "D. Present the star player with match data showing how their behavior is negatively impacting their partner's shot percentage, and task them with explicitly elevating their partner in the next game",
           ],
           required: true,
         },
         {
           id: 'mcq2',
           type: 'radio',
-          label: 'Your coach gives you critical feedback after a match. How do you react?',
+          label:
+            "Managing Up and Handling Ownership: The team ownership strongly suggests drafting a specific player because they have a massive social media following and will sell a lot of merchandise. However, you have scouted this player and believe their playstyle is a terrible fit for the aggressive, fast-paced identity you are trying to build. What is your response?",
           options: [
-            'A. Listen carefully and actively work on it in training',
-            'B. Accept it but only apply what I agree with',
-            'C. Feel discouraged but try to improve later',
-            'D. Disagree internally and stick to my style',
+            "A. Accept the ownership's decision without argument; they write the checks, and it's your job to figure out how to make the player work on the court",
+            "B. Push back hard in the meeting, explicitly stating that drafting for marketing over winning will ruin the team's competitive credibility",
+            'C. Acknowledge the marketing value, but privately present ownership with a detailed breakdown of the player\'s tactical flaws alongside a counter-proposal of three alternative players who offer both competitive edge and brand potential',
+            'D. Leak your dissatisfaction to your trusted players so they are prepared to carry the extra weight on the court',
           ],
           required: true,
         },
         {
           id: 'mcq3',
           type: 'radio',
-          label: 'A teammate blames you unfairly during a game. What is your response?',
+          label:
+            'Crisis Management and Momentum: The team has suffered three brutal, narrow losses in a row. Morale is at rock bottom, practices are quiet and tense, and players are starting to point fingers in the locker room. You have one day of practice before a crucial tournament. How do you structure that day?',
           options: [
-            'A. Stay calm and focus on the game, address it later',
-            'B. Respond immediately to defend myself',
-            'C. Ignore it completely and avoid the teammate',
-            'D. Let it affect my performance',
+            'A. Cancel practice entirely and take the team out for an off-site dinner or activity to force them to bond and decompress',
+            'B. Run the hardest, most physically grueling conditioning practice of the year so they are too exhausted to argue and remember what hard work feels like',
+            'C. Hold a "clear the air" film session where everyone must state one thing they did wrong and one thing a teammate needs to do better',
+            "D. Keep the practice light, high-energy, and completely focused on fundamental drills they excel at, ending with a fun, low-stakes competitive game to get them feeling what it's like to win again",
           ],
           required: true,
         },
@@ -96,25 +99,25 @@ const starterFormSchema = {
           id: 'mcq4',
           type: 'radio',
           label:
-            'In a doubles pickleball match, you receive a high ball that you can smash, but your partner is in a better position for an easier winner. What do you do?',
+            'In-Game Tactical Flexibility: You are in the semi-finals. Your starting duo is playing an unorthodox team that is exploiting a strange weakness in your defense. Your team looks confused and drops the first game 11-3. You call a timeout. What is your primary message?',
           options: [
-            'A. Smash the ball to try and finish the point myself',
-            'B. Let or guide the ball to my partner for a higher-percentage shot',
-            'C. Decide in the moment based on positioning and opponents',
-            'D. Hesitate, causing confusion and possibly losing the point',
+            'A. Reiterate the original game plan loudly and tell them to execute it with more intensity and better focus',
+            'B. Ask the players what they are seeing on the court and let them dictate the adjustments for Game 2',
+            'C. Give them one specific, concrete tactical adjustment (e.g., "Shift your baseline positioning two feet left and force them to hit inside-out") and tell them to execute only that',
+            'D. Swap out one of the players immediately, sending in a substitute to drastically change the rhythm of the game',
           ],
           required: true,
         },
       ],
     },
     {
-      title: 'Review & Submit',
+      title: 'Preview',
       id: 'review-step',
       fields: [
         {
           id: 'reviewInfo',
           type: 'info',
-          content: 'Please verify details before submitting.',
+          content: 'Please preview your details before submitting.',
         },
       ],
     },
@@ -367,9 +370,27 @@ async function seedDefaults() {
         const fieldIds = new Set(steps.flatMap((step) => step?.fields || []).map((field) => field?.id).filter(Boolean));
         const requiredFieldIds = ['acceptGuidelines', 'teamName', 'ownerName', 'contactNumber', 'mcq1', 'mcq2', 'mcq3', 'mcq4'];
         const hasAllRequiredFields = requiredFieldIds.every((id) => fieldIds.has(id));
+        const existingQuestionnaire = steps.find((step) => step?.title === 'Pre-Registration Questionnaire');
+        const starterQuestionnaire = starterFormSchema.steps.find((step) => step.title === 'Pre-Registration Questionnaire');
+        const existingQuestionFields = Array.isArray(existingQuestionnaire?.fields) ? existingQuestionnaire.fields : [];
+        const starterQuestionFields = Array.isArray(starterQuestionnaire?.fields) ? starterQuestionnaire.fields : [];
+        const hasMatchingQuestionnaire =
+          existingQuestionFields.length === starterQuestionFields.length &&
+          starterQuestionFields.every((starterField, index) => {
+            const existingField = existingQuestionFields[index];
+
+            return (
+              existingField?.id === starterField.id &&
+              existingField?.label === starterField.label &&
+              JSON.stringify(existingField?.options || []) === JSON.stringify(starterField.options || [])
+            );
+          });
 
         needsRepair =
-          steps.length < starterFormSchema.steps.length || !hasAllRequiredSteps || !hasAllRequiredFields;
+          steps.length < starterFormSchema.steps.length ||
+          !hasAllRequiredSteps ||
+          !hasAllRequiredFields ||
+          !hasMatchingQuestionnaire;
       } catch {
         needsRepair = true;
       }
