@@ -807,7 +807,7 @@ app.put(
   requireAdmin,
   asyncRoute(async (req, res) => {
     const { status } = req.body || {};
-    const allowedStatuses = new Set(['submitted', 'in_review', 'approved']);
+    const allowedStatuses = new Set(['submitted', 'in_review', 'approved', 'rejected']);
     if (!allowedStatuses.has(status)) {
       return res.status(400).json({ error: 'Invalid status' });
     }

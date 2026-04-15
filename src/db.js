@@ -168,7 +168,7 @@ async function createTables() {
       form_id CHAR(36) NOT NULL,
       user_id CHAR(36) NOT NULL,
       data_json LONGTEXT NOT NULL,
-      status ENUM('submitted', 'in_review', 'approved') NOT NULL DEFAULT 'submitted',
+      status ENUM('submitted', 'in_review', 'approved', 'rejected') NOT NULL DEFAULT 'submitted',
       approved_at TIMESTAMP NULL DEFAULT NULL,
       approved_by CHAR(36) NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -220,10 +220,12 @@ async function ensureSubmissionColumns() {
   const columnNames = new Set(columns.map((column) => column.Field));
 
   if (!columnNames.has('status')) {
-    await pool.query("ALTER TABLE submissions ADD COLUMN status ENUM('submitted', 'in_review', 'approved') NOT NULL DEFAULT 'submitted'");
+    await pool.query(
+      "ALTER TABLE submissions ADD COLUMN status ENUM('submitted', 'in_review', 'approved', 'rejected') NOT NULL DEFAULT 'submitted'",
+    );
   } else {
     await pool.query(
-      "ALTER TABLE submissions MODIFY COLUMN status ENUM('submitted', 'in_review', 'approved') NOT NULL DEFAULT 'submitted'",
+      "ALTER TABLE submissions MODIFY COLUMN status ENUM('submitted', 'in_review', 'approved', 'rejected') NOT NULL DEFAULT 'submitted'",
     );
   }
 
