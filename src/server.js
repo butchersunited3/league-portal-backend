@@ -128,6 +128,18 @@ function statusLabel(status) {
   return status || 'pending';
 }
 
+function validatePassword(password) {
+  if (!password) {
+    return 'Password is required';
+  }
+
+  if (String(password).length < 6) {
+    return 'Password must be at least 6 characters';
+  }
+
+  return null;
+}
+
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
 });
@@ -200,6 +212,43 @@ app.get(
   }),
 );
 
+app.post(
+  '/api/auth/change-password',
+  authenticateToken,
+  asyncRoute(async (req, res) => {
+    const { current_password, new_password } = req.body || {};
+
+    if (!current_password || !new_password) {
+      return res.status(400).json({ error: 'current_password and new_password are required' });
+    }
+
+    const passwordError = validatePassword(new_password);
+    if (passwordError) {
+      return res.status(400).json({ error: passwordError });
+    }
+
+    const user = await queryOne('SELECT id, password_hash FROM users WHERE id = ? LIMIT 1', [req.user.id]);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const isMatch = await bcrypt.compare(String(current_password), user.password_hash);
+    if (!isMatch) {
+      return res.status(400).json({ error: 'Current password is incorrect' });
+    }
+
+    const isSamePassword = await bcrypt.compare(String(new_password), user.password_hash);
+    if (isSamePassword) {
+      return res.status(400).json({ error: 'New password must be different from the current password' });
+    }
+
+    const passwordHash = await bcrypt.hash(String(new_password), 10);
+    await execute('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, req.user.id]);
+
+    return res.json({ success: true });
+  }),
+);
+
 app.get(
   '/api/admin/stats',
   authenticateToken,
@@ -222,32 +271,71 @@ app.get(
   authenticateToken,
   requireAdmin,
   asyncRoute(async (_req, res) => {
-    const approvedOwners = await queryAll(
+    const owners = await queryAll(
       `
-        SELECT 
-          s.id AS submission_id,
-          s.form_id,
-          s.created_at AS submitted_at,
-          s.approved_at,
-          u.id AS user_id,
+        SELECT
           u.name,
+          u.id AS user_id,
           u.email,
           u.phone,
+          u.created_at AS registered_at,
+          s.id AS submission_id,
+          s.form_id,
+          s.status AS submission_status,
+          s.created_at AS submitted_at,
+          s.approved_at,
           f.title AS form_title,
           s.data_json
-        FROM submissions s
-        JOIN users u ON s.user_id = u.id
-        JOIN forms f ON s.form_id = f.id
-        WHERE s.status = 'approved'
-        ORDER BY s.approved_at DESC, s.created_at DESC
+        FROM users u
+        LEFT JOIN submissions s
+          ON s.id = (
+            SELECT s2.id
+            FROM submissions s2
+            WHERE s2.user_id = u.id
+            ORDER BY
+              CASE WHEN s2.status = 'approved' THEN 0 ELSE 1 END,
+              s2.created_at DESC
+            LIMIT 1
+          )
+        LEFT JOIN forms f ON f.id = s.form_id
+        WHERE u.role = 'owner'
+        ORDER BY u.created_at DESC, u.name ASC
       `,
     );
     return res.json(
-      approvedOwners.map((owner) => ({
+      owners.map((owner) => ({
         ...owner,
         data: parseJsonField(owner.data_json, {}),
       })),
     );
+  }),
+);
+
+app.post(
+  '/api/admin/users/:userId/reset-password',
+  authenticateToken,
+  requireAdmin,
+  asyncRoute(async (req, res) => {
+    const { new_password } = req.body || {};
+
+    const passwordError = validatePassword(new_password);
+    if (passwordError) {
+      return res.status(400).json({ error: passwordError });
+    }
+
+    const owner = await queryOne('SELECT id, role FROM users WHERE id = ? LIMIT 1', [req.params.userId]);
+    if (!owner) {
+      return res.status(404).json({ error: 'Owner not found' });
+    }
+
+    if (owner.role !== 'owner') {
+      return res.status(400).json({ error: 'Only owner passwords can be reset here' });
+    }
+
+    const passwordHash = await bcrypt.hash(String(new_password), 10);
+    await execute('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, owner.id]);
+
+    return res.json({ success: true });
   }),
 );
 
