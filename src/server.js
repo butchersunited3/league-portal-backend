@@ -15,12 +15,20 @@ const PAYMENT_CURRENCY = (process.env.PAYMENT_CURRENCY || 'INR').toUpperCase();
 const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || '';
 const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || '';
 
+const allowedOrigins = process.env.FRONTEND_URL.split(',');
+
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+    origin: function (origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+	callback(new Error('Not allowed by CORS'));
+      }
+    },
     credentials: true,
-  }),
-);
+  })
+)
 app.use(express.json());
 
 function createToken(user) {
