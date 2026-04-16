@@ -3,6 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 import { randomUUID } from 'crypto';
 import { execute, initDatabase, queryAll, queryOne } from './db.js';
 
@@ -10,6 +11,9 @@ const app = express();
 const PORT = Number(process.env.PORT || 4000);
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
+const PAYMENT_CURRENCY = (process.env.PAYMENT_CURRENCY || 'INR').toUpperCase();
+const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || '';
+const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || '';
 
 app.use(
   cors({
@@ -58,6 +62,70 @@ function asyncRoute(handler) {
   return (req, res, next) => {
     Promise.resolve(handler(req, res, next)).catch(next);
   };
+}
+
+function normalizeCurrency(currency) {
+  return String(currency || PAYMENT_CURRENCY).trim().toUpperCase();
+}
+
+function parseAmount(amount) {
+  const parsed = Number(amount);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.round(parsed * 100) / 100;
+}
+
+function formatAmount(amount) {
+  return Number(Number(amount || 0).toFixed(2));
+}
+
+function toMinorUnits(amount) {
+  return Math.round(formatAmount(amount) * 100);
+}
+
+function requireRazorpayConfig(res) {
+  if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
+    res.status(500).json({ error: 'Razorpay is not configured on the server' });
+    return false;
+  }
+  return true;
+}
+
+async function createRazorpayOrder({ amount, currency, receipt, notes }) {
+  const response = await fetch('https://api.razorpay.com/v1/orders', {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${RAZORPAY_KEY_ID}:${RAZORPAY_KEY_SECRET}`).toString('base64')}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      amount: toMinorUnits(amount),
+      currency,
+      receipt,
+      notes,
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data?.error?.description || 'Failed to create Razorpay order');
+  }
+
+  return data;
+}
+
+function verifyRazorpaySignature({ orderId, paymentId, signature }) {
+  const digest = crypto
+    .createHmac('sha256', RAZORPAY_KEY_SECRET)
+    .update(`${orderId}|${paymentId}`)
+    .digest('hex');
+
+  return digest === signature;
+}
+
+function statusLabel(status) {
+  return status || 'pending';
 }
 
 app.get('/health', (_req, res) => {
@@ -184,6 +252,181 @@ app.get(
 );
 
 app.get(
+  '/api/admin/payment-dues',
+  authenticateToken,
+  requireAdmin,
+  asyncRoute(async (_req, res) => {
+    const dues = await queryAll(
+      `
+        SELECT
+          pd.*,
+          creator.name AS created_by_name,
+          (
+            SELECT COUNT(*)
+            FROM payments p
+            WHERE p.due_id = pd.id AND p.status = 'paid'
+          ) AS paid_count
+        FROM payment_dues pd
+        LEFT JOIN users creator ON pd.created_by = creator.id
+        ORDER BY pd.created_at DESC
+      `,
+    );
+
+    return res.json(
+      dues.map((due) => ({
+        ...due,
+        amount: formatAmount(due.amount),
+        is_active: Number(due.is_active) === 1,
+      })),
+    );
+  }),
+);
+
+app.post(
+  '/api/admin/payment-dues',
+  authenticateToken,
+  requireAdmin,
+  asyncRoute(async (req, res) => {
+    const { title, description, amount, currency, due_date, is_active } = req.body || {};
+    const normalizedAmount = parseAmount(amount);
+
+    if (!title || normalizedAmount === null) {
+      return res.status(400).json({ error: 'title and a valid amount are required' });
+    }
+
+    const id = randomUUID();
+    const normalizedCurrency = normalizeCurrency(currency);
+    const normalizedDueDate = due_date ? new Date(due_date) : null;
+    if (normalizedDueDate && Number.isNaN(normalizedDueDate.getTime())) {
+      return res.status(400).json({ error: 'Invalid due_date' });
+    }
+
+    await execute(
+      `
+        INSERT INTO payment_dues (id, title, description, amount, currency, due_date, is_active, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        id,
+        String(title).trim(),
+        description ? String(description).trim() : '',
+        normalizedAmount,
+        normalizedCurrency,
+        normalizedDueDate ? normalizedDueDate : null,
+        is_active === false ? 0 : 1,
+        req.user.id,
+      ],
+    );
+
+    return res.json({ id });
+  }),
+);
+
+app.put(
+  '/api/admin/payment-dues/:id',
+  authenticateToken,
+  requireAdmin,
+  asyncRoute(async (req, res) => {
+    const existing = await queryOne('SELECT id FROM payment_dues WHERE id = ? LIMIT 1', [req.params.id]);
+    if (!existing) {
+      return res.status(404).json({ error: 'Payment due not found' });
+    }
+
+    const { title, description, amount, currency, due_date, is_active } = req.body || {};
+    const normalizedAmount = parseAmount(amount);
+    if (!title || normalizedAmount === null) {
+      return res.status(400).json({ error: 'title and a valid amount are required' });
+    }
+
+    const normalizedDueDate = due_date ? new Date(due_date) : null;
+    if (normalizedDueDate && Number.isNaN(normalizedDueDate.getTime())) {
+      return res.status(400).json({ error: 'Invalid due_date' });
+    }
+
+    await execute(
+      `
+        UPDATE payment_dues
+        SET title = ?, description = ?, amount = ?, currency = ?, due_date = ?, is_active = ?
+        WHERE id = ?
+      `,
+      [
+        String(title).trim(),
+        description ? String(description).trim() : '',
+        normalizedAmount,
+        normalizeCurrency(currency),
+        normalizedDueDate ? normalizedDueDate : null,
+        is_active === false ? 0 : 1,
+        req.params.id,
+      ],
+    );
+
+    return res.json({ success: true });
+  }),
+);
+
+app.get(
+  '/api/admin/payments',
+  authenticateToken,
+  requireAdmin,
+  asyncRoute(async (_req, res) => {
+    const payments = await queryAll(
+      `
+        SELECT
+          p.*,
+          u.name AS owner_name,
+          u.email AS owner_email,
+          u.phone AS owner_phone,
+          pd.title AS due_title,
+          pd.description AS due_description,
+          pd.due_date,
+          pd.is_active AS due_is_active
+        FROM payments p
+        JOIN users u ON p.owner_id = u.id
+        JOIN payment_dues pd ON p.due_id = pd.id
+        ORDER BY p.created_at DESC
+      `,
+    );
+
+    return res.json(
+      payments.map((payment) => ({
+        ...payment,
+        amount: formatAmount(payment.amount),
+        due_is_active: Number(payment.due_is_active) === 1,
+      })),
+    );
+  }),
+);
+
+app.put(
+  '/api/admin/payments/:id/status',
+  authenticateToken,
+  requireAdmin,
+  asyncRoute(async (req, res) => {
+    const { status, notes } = req.body || {};
+    const allowedStatuses = new Set(['pending', 'paid', 'failed', 'cancelled', 'refunded']);
+    if (!allowedStatuses.has(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    const payment = await queryOne('SELECT id FROM payments WHERE id = ? LIMIT 1', [req.params.id]);
+    if (!payment) {
+      return res.status(404).json({ error: 'Payment not found' });
+    }
+
+    await execute(
+      `
+        UPDATE payments
+        SET status = ?, notes = ?, paid_at = CASE WHEN ? = 'paid' THEN COALESCE(paid_at, CURRENT_TIMESTAMP) ELSE paid_at END
+        WHERE id = ?
+      `,
+      [status, notes ? String(notes).trim() : null, status, req.params.id],
+    );
+
+    return res.json({ success: true, status });
+  }),
+);
+
+app.get(
   '/api/forms',
   authenticateToken,
   asyncRoute(async (req, res) => {
@@ -199,6 +442,254 @@ app.get(
         schema: parseJsonField(form.schema_json, { steps: [] }),
       })),
     );
+  }),
+);
+
+app.get(
+  '/api/owner/payments',
+  authenticateToken,
+  asyncRoute(async (req, res) => {
+    if (req.user.role !== 'owner') {
+      return res.status(403).json({ error: 'Owner access required' });
+    }
+
+    const dues = await queryAll(
+      `
+        SELECT pd.*
+        FROM payment_dues pd
+        WHERE pd.is_active = 1
+           OR EXISTS (
+             SELECT 1 FROM payments p WHERE p.due_id = pd.id AND p.owner_id = ?
+           )
+        ORDER BY pd.due_date IS NULL, pd.due_date ASC, pd.created_at DESC
+      `,
+      [req.user.id],
+    );
+
+    const payments = await queryAll(
+      `
+        SELECT p.*
+        FROM payments p
+        WHERE p.owner_id = ?
+        ORDER BY p.updated_at DESC, p.created_at DESC
+      `,
+      [req.user.id],
+    );
+
+    const paymentsByDue = new Map();
+    for (const payment of payments) {
+      const duePayments = paymentsByDue.get(payment.due_id) || [];
+      duePayments.push({
+        ...payment,
+        amount: formatAmount(payment.amount),
+      });
+      paymentsByDue.set(payment.due_id, duePayments);
+    }
+
+    return res.json(
+      dues.map((due) => {
+        const duePayments = paymentsByDue.get(due.id) || [];
+        const latestPayment = duePayments[0] || null;
+        const isPaid = duePayments.some((payment) => payment.status === 'paid');
+
+        return {
+          ...due,
+          amount: formatAmount(due.amount),
+          is_active: Number(due.is_active) === 1,
+          is_paid: isPaid,
+          latest_payment: latestPayment,
+          payments: duePayments,
+        };
+      }),
+    );
+  }),
+);
+
+app.post(
+  '/api/owner/payments/orders',
+  authenticateToken,
+  asyncRoute(async (req, res) => {
+    if (req.user.role !== 'owner') {
+      return res.status(403).json({ error: 'Owner access required' });
+    }
+
+    if (!requireRazorpayConfig(res)) {
+      return undefined;
+    }
+
+    const { due_id } = req.body || {};
+    if (!due_id) {
+      return res.status(400).json({ error: 'due_id is required' });
+    }
+
+    const due = await queryOne(
+      'SELECT id, title, amount, currency, due_date, is_active FROM payment_dues WHERE id = ? LIMIT 1',
+      [due_id],
+    );
+    if (!due) {
+      return res.status(404).json({ error: 'Payment due not found' });
+    }
+
+    if (Number(due.is_active) !== 1) {
+      return res.status(400).json({ error: 'This payment due is inactive' });
+    }
+
+    const existingPaid = await queryOne(
+      "SELECT id FROM payments WHERE due_id = ? AND owner_id = ? AND status = 'paid' LIMIT 1",
+      [due_id, req.user.id],
+    );
+    if (existingPaid) {
+      return res.status(400).json({ error: 'This due has already been paid' });
+    }
+
+    const paymentId = randomUUID();
+    const order = await createRazorpayOrder({
+      amount: due.amount,
+      currency: normalizeCurrency(due.currency),
+      receipt: `due_${String(paymentId).replace(/-/g, '').slice(0, 20)}`,
+      notes: {
+        due_id,
+        owner_id: req.user.id,
+      },
+    });
+
+    await execute(
+      `
+        INSERT INTO payments (id, due_id, owner_id, status, amount, currency, gateway, gateway_order_id)
+        VALUES (?, ?, ?, 'pending', ?, ?, 'razorpay', ?)
+      `,
+      [paymentId, due_id, req.user.id, due.amount, normalizeCurrency(due.currency), order.id],
+    );
+
+    return res.json({
+      payment_id: paymentId,
+      razorpay_key_id: RAZORPAY_KEY_ID,
+      order: {
+        id: order.id,
+        amount: order.amount,
+        currency: order.currency,
+      },
+      due: {
+        id: due.id,
+        title: due.title,
+        amount: formatAmount(due.amount),
+        currency: normalizeCurrency(due.currency),
+      },
+    });
+  }),
+);
+
+app.post(
+  '/api/owner/payments/verify',
+  authenticateToken,
+  asyncRoute(async (req, res) => {
+    if (req.user.role !== 'owner') {
+      return res.status(403).json({ error: 'Owner access required' });
+    }
+
+    if (!requireRazorpayConfig(res)) {
+      return undefined;
+    }
+
+    const { payment_id, razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body || {};
+    if (!payment_id || !razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({
+        error: 'payment_id, razorpay_order_id, razorpay_payment_id and razorpay_signature are required',
+      });
+    }
+
+    const payment = await queryOne(
+      `
+        SELECT p.*, pd.title AS due_title
+        FROM payments p
+        JOIN payment_dues pd ON pd.id = p.due_id
+        WHERE p.id = ? AND p.owner_id = ?
+        LIMIT 1
+      `,
+      [payment_id, req.user.id],
+    );
+    if (!payment) {
+      return res.status(404).json({ error: 'Payment not found' });
+    }
+
+    if (payment.status === 'paid') {
+      return res.json({ success: true, status: 'paid' });
+    }
+
+    if (payment.gateway_order_id !== razorpay_order_id) {
+      return res.status(400).json({ error: 'Order mismatch' });
+    }
+
+    const duplicatePaid = await queryOne(
+      "SELECT id FROM payments WHERE due_id = ? AND owner_id = ? AND status = 'paid' AND id <> ? LIMIT 1",
+      [payment.due_id, req.user.id, payment.id],
+    );
+    if (duplicatePaid) {
+      return res.status(409).json({ error: 'This due has already been paid' });
+    }
+
+    const isValidSignature = verifyRazorpaySignature({
+      orderId: razorpay_order_id,
+      paymentId: razorpay_payment_id,
+      signature: razorpay_signature,
+    });
+    if (!isValidSignature) {
+      return res.status(400).json({ error: 'Invalid payment signature' });
+    }
+
+    await execute(
+      `
+        UPDATE payments
+        SET status = 'paid',
+            gateway_payment_id = ?,
+            gateway_signature = ?,
+            failure_reason = NULL,
+            paid_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `,
+      [razorpay_payment_id, razorpay_signature, payment_id],
+    );
+
+    return res.json({
+      success: true,
+      status: 'paid',
+      due_title: payment.due_title,
+    });
+  }),
+);
+
+app.post(
+  '/api/owner/payments/:id/status',
+  authenticateToken,
+  asyncRoute(async (req, res) => {
+    if (req.user.role !== 'owner') {
+      return res.status(403).json({ error: 'Owner access required' });
+    }
+
+    const { status, failure_reason } = req.body || {};
+    const allowedStatuses = new Set(['failed', 'cancelled']);
+    if (!allowedStatuses.has(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    const payment = await queryOne(
+      'SELECT id, status FROM payments WHERE id = ? AND owner_id = ? LIMIT 1',
+      [req.params.id, req.user.id],
+    );
+    if (!payment) {
+      return res.status(404).json({ error: 'Payment not found' });
+    }
+
+    if (payment.status === 'paid') {
+      return res.status(400).json({ error: 'Paid payments cannot be changed by the owner' });
+    }
+
+    await execute(
+      'UPDATE payments SET status = ?, failure_reason = ? WHERE id = ?',
+      [statusLabel(status), failure_reason ? String(failure_reason).trim() : null, req.params.id],
+    );
+
+    return res.json({ success: true, status: statusLabel(status) });
   }),
 );
 
