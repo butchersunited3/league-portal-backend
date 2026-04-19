@@ -30,10 +30,23 @@ For payments, also set:
 - `RAZORPAY_KEY_ID`
 - `RAZORPAY_KEY_SECRET`
 
+For Google sign-in, also set:
+
+- `GOOGLE_CLIENT_ID`
+
+For email verification with Resend, also set:
+
+- `RESEND_EMAIL_API`
+- `RESEND_FROM_EMAIL` (optional, defaults to `onboarding@resend.dev`)
+- `EMAIL_VERIFICATION_OTP_TTL_MINUTES` (optional)
+
 ## 4) API endpoints used by frontend
 
 - `POST /api/auth/register`
 - `POST /api/auth/login`
+- `POST /api/auth/google`
+- `POST /api/auth/resend-verification`
+- `POST /api/auth/verify-email`
 - `GET /api/auth/me`
 - `GET /api/admin/stats`
 - `GET /api/admin/users`
