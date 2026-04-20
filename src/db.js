@@ -151,6 +151,8 @@ async function createTables() {
       email_verified_at TIMESTAMP NULL DEFAULT NULL,
       email_verification_token_hash VARCHAR(255) NULL,
       email_verification_expires_at DATETIME NULL DEFAULT NULL,
+      reset_password_token_hash VARCHAR(255) NULL,
+      reset_password_expires_at DATETIME NULL DEFAULT NULL,
       role ENUM('admin', 'owner') NOT NULL DEFAULT 'owner',
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
@@ -269,6 +271,18 @@ async function ensureUserColumns() {
   if (!columnNames.has('email_verification_expires_at')) {
     await pool.query(
       'ALTER TABLE users ADD COLUMN email_verification_expires_at DATETIME NULL DEFAULT NULL AFTER email_verification_token_hash',
+    );
+  }
+
+  if (!columnNames.has('reset_password_token_hash')) {
+    await pool.query(
+      'ALTER TABLE users ADD COLUMN reset_password_token_hash VARCHAR(255) NULL AFTER email_verification_expires_at',
+    );
+  }
+
+  if (!columnNames.has('reset_password_expires_at')) {
+    await pool.query(
+      'ALTER TABLE users ADD COLUMN reset_password_expires_at DATETIME NULL DEFAULT NULL AFTER reset_password_token_hash',
     );
   }
 }

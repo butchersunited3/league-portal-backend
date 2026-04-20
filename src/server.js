@@ -21,6 +21,7 @@ const GOOGLE_CLIENT_IDS = String(process.env.GOOGLE_CLIENT_ID || '')
   .map((value) => value.trim())
   .filter(Boolean);
 const EMAIL_VERIFICATION_OTP_TTL_MINUTES = Number(process.env.EMAIL_VERIFICATION_OTP_TTL_MINUTES || 10);
+const PASSWORD_RESET_TTL_MINUTES = Number(process.env.PASSWORD_RESET_TTL_MINUTES || 30);
 
 const allowedOrigins = process.env.FRONTEND_URL.split(',');
 
@@ -167,12 +168,20 @@ function validatePassword(password) {
   return null;
 }
 
-function hashVerificationCode(code) {
-  return crypto.createHash('sha256').update(String(code)).digest('hex');
+function hashValue(value) {
+  return crypto.createHash('sha256').update(String(value)).digest('hex');
 }
 
 function createEmailVerificationCode() {
   return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+function createPasswordResetToken() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+function getPrimaryFrontendUrl() {
+  return allowedOrigins.find(Boolean) || `http://localhost:${PORT}`;
 }
 
 async function sendVerificationEmail({ email, name, code }) {
@@ -212,17 +221,78 @@ async function sendVerificationEmail({ email, name, code }) {
   return data;
 }
 
+async function sendPasswordResetEmail({ email, name, resetUrl }) {
+  if (!RESEND_EMAIL_API) {
+    throw new Error('Resend email API is not configured on the server');
+  }
+
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${RESEND_EMAIL_API}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: RESEND_FROM_EMAIL,
+      to: [email],
+      subject: 'Reset your ReadySetLeague password',
+      html: `
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0f172a;">
+          <h2 style="margin-bottom: 12px;">Reset your password</h2>
+          <p>Hello ${String(name || 'there')},</p>
+          <p>We received a request to reset your ReadySetLeague password.</p>
+          <p>
+            <a href="${resetUrl}" style="display: inline-block; margin: 12px 0; padding: 12px 18px; background: #059669; color: #ffffff; text-decoration: none; border-radius: 8px; font-weight: 700;">
+              Reset password
+            </a>
+          </p>
+          <p>If the button does not work, copy and paste this link into your browser:</p>
+          <p style="word-break: break-word;">
+            <a href="${resetUrl}" style="color: #059669;">${resetUrl}</a>
+          </p>
+          <p>This link expires in ${PASSWORD_RESET_TTL_MINUTES} minutes.</p>
+          <p>If you did not request this, you can safely ignore this email.</p>
+        </div>
+      `,
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data?.message || data?.error || 'Failed to send password reset email');
+  }
+
+  return data;
+}
+
 async function issueEmailVerification(user) {
   const code = createEmailVerificationCode();
   const expiresAt = new Date(Date.now() + EMAIL_VERIFICATION_OTP_TTL_MINUTES * 60 * 1000);
   await execute(
     'UPDATE users SET email_verification_token_hash = ?, email_verification_expires_at = ? WHERE id = ?',
-    [hashVerificationCode(code), expiresAt, user.id],
+    [hashValue(code), expiresAt, user.id],
   );
   await sendVerificationEmail({
     email: user.email,
     name: user.name,
     code,
+  });
+}
+
+async function issuePasswordReset(user) {
+  const token = createPasswordResetToken();
+  const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MINUTES * 60 * 1000);
+  const resetUrl = `${getPrimaryFrontendUrl().replace(/\/$/, '')}/reset-password?token=${encodeURIComponent(token)}`;
+
+  await execute(
+    'UPDATE users SET reset_password_token_hash = ?, reset_password_expires_at = ? WHERE id = ?',
+    [hashValue(token), expiresAt, user.id],
+  );
+
+  await sendPasswordResetEmail({
+    email: user.email,
+    name: user.name,
+    resetUrl,
   });
 }
 
@@ -422,7 +492,7 @@ app.post(
       return res.status(400).json({ error: 'Verification code has expired' });
     }
 
-    if (!user.email_verification_token_hash || user.email_verification_token_hash !== hashVerificationCode(normalizedCode)) {
+    if (!user.email_verification_token_hash || user.email_verification_token_hash !== hashValue(normalizedCode)) {
       return res.status(400).json({ error: 'Verification code is invalid' });
     }
 
@@ -438,6 +508,83 @@ app.post(
     );
 
     return res.json({ success: true, message: 'Email verified successfully. You can sign in now.' });
+  }),
+);
+
+app.post(
+  '/api/auth/forgot-password',
+  asyncRoute(async (req, res) => {
+    const normalizedEmail = String(req.body?.email || '').trim().toLowerCase();
+    if (!normalizedEmail) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    const user = await queryOne(
+      'SELECT id, name, email, auth_provider, email_verified_at FROM users WHERE email = ? LIMIT 1',
+      [normalizedEmail],
+    );
+
+    if (user && user.auth_provider === 'password' && user.email_verified_at) {
+      await issuePasswordReset(user);
+    }
+
+    return res.json({
+      success: true,
+      message: 'If an account exists for that email, a password reset link has been sent.',
+    });
+  }),
+);
+
+app.post(
+  '/api/auth/reset-password',
+  asyncRoute(async (req, res) => {
+    const { token, new_password } = req.body || {};
+
+    if (!token || !new_password) {
+      return res.status(400).json({ error: 'token and new_password are required' });
+    }
+
+    const passwordError = validatePassword(new_password);
+    if (passwordError) {
+      return res.status(400).json({ error: passwordError });
+    }
+
+    const user = await queryOne(
+      `
+        SELECT id, password_hash, auth_provider, reset_password_token_hash, reset_password_expires_at
+        FROM users
+        WHERE reset_password_token_hash = ?
+        LIMIT 1
+      `,
+      [hashValue(token)],
+    );
+
+    if (!user || !user.reset_password_expires_at || new Date(user.reset_password_expires_at).getTime() < Date.now()) {
+      return res.status(400).json({ error: 'Password reset link is invalid or has expired' });
+    }
+
+    if (user.auth_provider !== 'password') {
+      return res.status(400).json({ error: 'Password reset is unavailable for Google sign-in accounts' });
+    }
+
+    const isSamePassword = await bcrypt.compare(String(new_password), user.password_hash);
+    if (isSamePassword) {
+      return res.status(400).json({ error: 'New password must be different from the current password' });
+    }
+
+    const passwordHash = await bcrypt.hash(String(new_password), 10);
+    await execute(
+      `
+        UPDATE users
+        SET password_hash = ?,
+            reset_password_token_hash = NULL,
+            reset_password_expires_at = NULL
+        WHERE id = ?
+      `,
+      [passwordHash, user.id],
+    );
+
+    return res.json({ success: true, message: 'Password reset successfully. You can sign in now.' });
   }),
 );
 
@@ -521,7 +668,10 @@ app.post(
     }
 
     const passwordHash = await bcrypt.hash(String(new_password), 10);
-    await execute('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, req.user.id]);
+    await execute(
+      'UPDATE users SET password_hash = ?, reset_password_token_hash = NULL, reset_password_expires_at = NULL WHERE id = ?',
+      [passwordHash, req.user.id],
+    );
 
     return res.json({ success: true });
   }),
@@ -611,7 +761,10 @@ app.post(
     }
 
     const passwordHash = await bcrypt.hash(String(new_password), 10);
-    await execute('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, owner.id]);
+    await execute(
+      'UPDATE users SET password_hash = ?, reset_password_token_hash = NULL, reset_password_expires_at = NULL WHERE id = ?',
+      [passwordHash, owner.id],
+    );
 
     return res.json({ success: true });
   }),
