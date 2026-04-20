@@ -146,6 +146,13 @@ async function createTables() {
       email VARCHAR(255) NOT NULL UNIQUE,
       phone VARCHAR(25) NOT NULL,
       password_hash VARCHAR(255) NOT NULL,
+      auth_provider VARCHAR(20) NOT NULL DEFAULT 'password',
+      google_sub VARCHAR(255) NULL,
+      email_verified_at TIMESTAMP NULL DEFAULT NULL,
+      email_verification_token_hash VARCHAR(255) NULL,
+      email_verification_expires_at DATETIME NULL DEFAULT NULL,
+      reset_password_token_hash VARCHAR(255) NULL,
+      reset_password_expires_at DATETIME NULL DEFAULT NULL,
       role ENUM('admin', 'owner') NOT NULL DEFAULT 'owner',
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
@@ -235,6 +242,48 @@ async function ensureSubmissionColumns() {
 
   if (!columnNames.has('approved_by')) {
     await pool.query('ALTER TABLE submissions ADD COLUMN approved_by CHAR(36) NULL');
+  }
+}
+
+async function ensureUserColumns() {
+  const [columns] = await pool.query('SHOW COLUMNS FROM users');
+  const columnNames = new Set(columns.map((column) => column.Field));
+
+  if (!columnNames.has('auth_provider')) {
+    await pool.query("ALTER TABLE users ADD COLUMN auth_provider VARCHAR(20) NOT NULL DEFAULT 'password' AFTER password_hash");
+  }
+
+  if (!columnNames.has('google_sub')) {
+    await pool.query('ALTER TABLE users ADD COLUMN google_sub VARCHAR(255) NULL AFTER auth_provider');
+  }
+
+  if (!columnNames.has('email_verified_at')) {
+    await pool.query('ALTER TABLE users ADD COLUMN email_verified_at TIMESTAMP NULL DEFAULT NULL AFTER google_sub');
+    await pool.query('UPDATE users SET email_verified_at = CURRENT_TIMESTAMP WHERE email_verified_at IS NULL');
+  }
+
+  if (!columnNames.has('email_verification_token_hash')) {
+    await pool.query(
+      'ALTER TABLE users ADD COLUMN email_verification_token_hash VARCHAR(255) NULL AFTER email_verified_at',
+    );
+  }
+
+  if (!columnNames.has('email_verification_expires_at')) {
+    await pool.query(
+      'ALTER TABLE users ADD COLUMN email_verification_expires_at DATETIME NULL DEFAULT NULL AFTER email_verification_token_hash',
+    );
+  }
+
+  if (!columnNames.has('reset_password_token_hash')) {
+    await pool.query(
+      'ALTER TABLE users ADD COLUMN reset_password_token_hash VARCHAR(255) NULL AFTER email_verification_expires_at',
+    );
+  }
+
+  if (!columnNames.has('reset_password_expires_at')) {
+    await pool.query(
+      'ALTER TABLE users ADD COLUMN reset_password_expires_at DATETIME NULL DEFAULT NULL AFTER reset_password_token_hash',
+    );
   }
 }
 
@@ -337,7 +386,7 @@ async function seedDefaults() {
     const adminId = randomUUID();
     const passwordHash = await bcrypt.hash(defaultAdminPassword, 10);
     await pool.query(
-      'INSERT INTO users (id, name, email, phone, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO users (id, name, email, phone, password_hash, role, email_verified_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)',
       [adminId, 'League Admin', defaultAdminEmail, '555-0100', passwordHash, 'admin'],
     );
   }
@@ -421,6 +470,7 @@ export async function initDatabase() {
   });
 
   await createTables();
+  await ensureUserColumns();
   await ensureSubmissionColumns();
   await ensurePaymentDueColumns();
   await ensurePaymentColumns();

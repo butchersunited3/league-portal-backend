@@ -14,6 +14,14 @@ const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
 const PAYMENT_CURRENCY = (process.env.PAYMENT_CURRENCY || 'INR').toUpperCase();
 const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || '';
 const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || '';
+const RESEND_EMAIL_API = process.env.RESEND_EMAIL_API || '';
+const RESEND_FROM_EMAIL = process.env.RESEND_FROM_EMAIL || 'ReadySetLeague <onboarding@resend.dev>';
+const GOOGLE_CLIENT_IDS = String(process.env.GOOGLE_CLIENT_ID || '')
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean);
+const EMAIL_VERIFICATION_OTP_TTL_MINUTES = Number(process.env.EMAIL_VERIFICATION_OTP_TTL_MINUTES || 10);
+const PASSWORD_RESET_TTL_MINUTES = Number(process.env.PASSWORD_RESET_TTL_MINUTES || 30);
 
 const allowedOrigins = process.env.FRONTEND_URL.split(',');
 
@@ -33,6 +41,18 @@ app.use(express.json());
 
 function createToken(user) {
   return jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+}
+
+function serializeUser(user) {
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    phone: user.phone || '',
+    role: user.role,
+    authProvider: user.auth_provider || 'password',
+    emailVerified: Boolean(user.email_verified_at),
+  };
 }
 
 function parseJsonField(value, fallback = null) {
@@ -148,6 +168,173 @@ function validatePassword(password) {
   return null;
 }
 
+function hashValue(value) {
+  return crypto.createHash('sha256').update(String(value)).digest('hex');
+}
+
+function createEmailVerificationCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+function createPasswordResetToken() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+function getPrimaryFrontendUrl() {
+  return allowedOrigins.find(Boolean) || `http://localhost:${PORT}`;
+}
+
+async function sendVerificationEmail({ email, name, code }) {
+  if (!RESEND_EMAIL_API) {
+    throw new Error('Resend email API is not configured on the server');
+  }
+
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${RESEND_EMAIL_API}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: RESEND_FROM_EMAIL,
+      to: [email],
+      subject: 'Your ReadySetLeague verification code',
+      html: `
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0f172a;">
+          <h2 style="margin-bottom: 12px;">Verify your email address</h2>
+          <p>Hello ${String(name || 'there')},</p>
+          <p>Thanks for registering with ReadySetLeague. Enter this one-time code to activate your account:</p>
+          <div style="margin: 24px 0; font-size: 32px; letter-spacing: 8px; font-weight: 700; color: #059669;">
+            ${code}
+          </div>
+          <p>This code expires in ${EMAIL_VERIFICATION_OTP_TTL_MINUTES} minutes.</p>
+        </div>
+      `,
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data?.message || data?.error || 'Failed to send verification email');
+  }
+
+  return data;
+}
+
+async function sendPasswordResetEmail({ email, name, resetUrl }) {
+  if (!RESEND_EMAIL_API) {
+    throw new Error('Resend email API is not configured on the server');
+  }
+
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${RESEND_EMAIL_API}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: RESEND_FROM_EMAIL,
+      to: [email],
+      subject: 'Reset your ReadySetLeague password',
+      html: `
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0f172a;">
+          <h2 style="margin-bottom: 12px;">Reset your password</h2>
+          <p>Hello ${String(name || 'there')},</p>
+          <p>We received a request to reset your ReadySetLeague password.</p>
+          <p>
+            <a href="${resetUrl}" style="display: inline-block; margin: 12px 0; padding: 12px 18px; background: #059669; color: #ffffff; text-decoration: none; border-radius: 8px; font-weight: 700;">
+              Reset password
+            </a>
+          </p>
+          <p>If the button does not work, copy and paste this link into your browser:</p>
+          <p style="word-break: break-word;">
+            <a href="${resetUrl}" style="color: #059669;">${resetUrl}</a>
+          </p>
+          <p>This link expires in ${PASSWORD_RESET_TTL_MINUTES} minutes.</p>
+          <p>If you did not request this, you can safely ignore this email.</p>
+        </div>
+      `,
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data?.message || data?.error || 'Failed to send password reset email');
+  }
+
+  return data;
+}
+
+async function issueEmailVerification(user) {
+  const code = createEmailVerificationCode();
+  const expiresAt = new Date(Date.now() + EMAIL_VERIFICATION_OTP_TTL_MINUTES * 60 * 1000);
+  await execute(
+    'UPDATE users SET email_verification_token_hash = ?, email_verification_expires_at = ? WHERE id = ?',
+    [hashValue(code), expiresAt, user.id],
+  );
+  await sendVerificationEmail({
+    email: user.email,
+    name: user.name,
+    code,
+  });
+}
+
+async function issuePasswordReset(user) {
+  const token = createPasswordResetToken();
+  const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MINUTES * 60 * 1000);
+  const resetUrl = `${getPrimaryFrontendUrl().replace(/\/$/, '')}/reset-password?token=${encodeURIComponent(token)}`;
+
+  await execute(
+    'UPDATE users SET reset_password_token_hash = ?, reset_password_expires_at = ? WHERE id = ?',
+    [hashValue(token), expiresAt, user.id],
+  );
+
+  await sendPasswordResetEmail({
+    email: user.email,
+    name: user.name,
+    resetUrl,
+  });
+}
+
+async function verifyGoogleCredential(credential) {
+  if (!credential) {
+    throw new Error('Google credential is required');
+  }
+
+  if (GOOGLE_CLIENT_IDS.length === 0) {
+    throw new Error('Google login is not configured on the server');
+  }
+
+  const response = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`);
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data?.error_description || 'Invalid Google token');
+  }
+
+  if (!GOOGLE_CLIENT_IDS.includes(data.aud)) {
+    throw new Error('Google token audience is invalid');
+  }
+
+  if (!['accounts.google.com', 'https://accounts.google.com'].includes(data.iss)) {
+    throw new Error('Google token issuer is invalid');
+  }
+
+  if (String(data.email_verified) !== 'true') {
+    throw new Error('Google account email is not verified');
+  }
+
+  if (!data.sub || !data.email) {
+    throw new Error('Google account details are incomplete');
+  }
+
+  return {
+    sub: String(data.sub),
+    email: String(data.email).trim().toLowerCase(),
+    name: String(data.name || data.email).trim(),
+  };
+}
+
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
 });
@@ -176,12 +363,23 @@ app.post(
     const passwordHash = await bcrypt.hash(String(password), 10);
 
     await execute(
-      'INSERT INTO users (id, name, email, phone, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)',
-      [id, String(name).trim(), normalizedEmail, String(phone).trim(), passwordHash, role],
+      'INSERT INTO users (id, name, email, phone, password_hash, auth_provider, role, email_verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, String(name).trim(), normalizedEmail, String(phone).trim(), passwordHash, 'password', role, null],
     );
 
-    const user = { id, name: String(name).trim(), email: normalizedEmail, role };
-    return res.json({ token: createToken(user), user });
+    const user = { id, name: String(name).trim(), email: normalizedEmail, phone: String(phone).trim(), role, auth_provider: 'password' };
+    try {
+      await issueEmailVerification(user);
+    } catch (error) {
+      await execute('DELETE FROM users WHERE id = ?', [id]);
+      throw error;
+    }
+
+    return res.status(201).json({
+      requiresEmailVerification: true,
+      email: normalizedEmail,
+      message: 'Registration successful. We sent a verification code to your email.',
+    });
   }),
 );
 
@@ -198,13 +396,225 @@ app.post(
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
+    if (user.auth_provider === 'password' && !user.email_verified_at) {
+      return res.status(403).json({
+        error: 'Please verify your email with the code we sent before signing in',
+        needsEmailVerification: true,
+        email: user.email,
+      });
+    }
+
     const isMatch = await bcrypt.compare(String(password), user.password_hash);
     if (!isMatch) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    const payload = { id: user.id, name: user.name, email: user.email, role: user.role };
+    const payload = serializeUser(user);
     return res.json({ token: createToken(payload), user: payload });
+  }),
+);
+
+app.post(
+  '/api/auth/google',
+  asyncRoute(async (req, res) => {
+    const { credential } = req.body || {};
+    const googleUser = await verifyGoogleCredential(credential);
+
+    let user = await queryOne('SELECT * FROM users WHERE google_sub = ? LIMIT 1', [googleUser.sub]);
+
+    if (!user) {
+      const emailMatch = await queryOne('SELECT * FROM users WHERE email = ? LIMIT 1', [googleUser.email]);
+
+      if (emailMatch && emailMatch.google_sub && emailMatch.google_sub !== googleUser.sub) {
+        return res.status(409).json({ error: 'This email is already linked to a different Google account' });
+      }
+
+      if (emailMatch) {
+        await execute(
+          'UPDATE users SET google_sub = ?, name = CASE WHEN TRIM(COALESCE(name, \'\')) = \'\' THEN ? ELSE name END, email_verified_at = COALESCE(email_verified_at, CURRENT_TIMESTAMP) WHERE id = ?',
+          [googleUser.sub, googleUser.name, emailMatch.id],
+        );
+        user = await queryOne('SELECT * FROM users WHERE id = ? LIMIT 1', [emailMatch.id]);
+      } else {
+        const id = randomUUID();
+        const passwordHash = await bcrypt.hash(randomUUID(), 10);
+        const countRow = await queryOne('SELECT COUNT(*) AS count FROM users');
+        const role = Number(countRow?.count || 0) === 0 ? 'admin' : 'owner';
+
+        await execute(
+          'INSERT INTO users (id, name, email, phone, password_hash, auth_provider, google_sub, role, email_verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)',
+          [id, googleUser.name, googleUser.email, '', passwordHash, 'google', googleUser.sub, role],
+        );
+
+        user = await queryOne('SELECT * FROM users WHERE id = ? LIMIT 1', [id]);
+      }
+    }
+
+    const payload = serializeUser(user);
+    return res.json({ token: createToken(payload), user: payload });
+  }),
+);
+
+app.post(
+  '/api/auth/verify-email',
+  asyncRoute(async (req, res) => {
+    const { email, code } = req.body || {};
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    const normalizedCode = String(code || '').trim();
+
+    if (!normalizedEmail || !normalizedCode) {
+      return res.status(400).json({ error: 'Email and verification code are required' });
+    }
+
+    if (!/^\d{6}$/.test(normalizedCode)) {
+      return res.status(400).json({ error: 'Verification code must be 6 digits' });
+    }
+
+    const user = await queryOne(
+      `
+        SELECT id, email, email_verified_at, email_verification_token_hash, email_verification_expires_at
+        FROM users
+        WHERE email = ?
+        LIMIT 1
+      `,
+      [normalizedEmail],
+    );
+
+    if (!user) {
+      return res.status(400).json({ error: 'No account found for this email' });
+    }
+
+    if (user.email_verified_at) {
+      return res.json({ success: true, alreadyVerified: true, message: 'Email already verified. You can sign in now.' });
+    }
+
+    if (!user.email_verification_expires_at || new Date(user.email_verification_expires_at).getTime() < Date.now()) {
+      return res.status(400).json({ error: 'Verification code has expired' });
+    }
+
+    if (!user.email_verification_token_hash || user.email_verification_token_hash !== hashValue(normalizedCode)) {
+      return res.status(400).json({ error: 'Verification code is invalid' });
+    }
+
+    await execute(
+      `
+        UPDATE users
+        SET email_verified_at = CURRENT_TIMESTAMP,
+            email_verification_token_hash = NULL,
+            email_verification_expires_at = NULL
+        WHERE id = ?
+      `,
+      [user.id],
+    );
+
+    return res.json({ success: true, message: 'Email verified successfully. You can sign in now.' });
+  }),
+);
+
+app.post(
+  '/api/auth/forgot-password',
+  asyncRoute(async (req, res) => {
+    const normalizedEmail = String(req.body?.email || '').trim().toLowerCase();
+    if (!normalizedEmail) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    const user = await queryOne(
+      'SELECT id, name, email, auth_provider, email_verified_at FROM users WHERE email = ? LIMIT 1',
+      [normalizedEmail],
+    );
+
+    if (user && user.auth_provider === 'password' && user.email_verified_at) {
+      await issuePasswordReset(user);
+    }
+
+    return res.json({
+      success: true,
+      message: 'If an account exists for that email, a password reset link has been sent.',
+    });
+  }),
+);
+
+app.post(
+  '/api/auth/reset-password',
+  asyncRoute(async (req, res) => {
+    const { token, new_password } = req.body || {};
+
+    if (!token || !new_password) {
+      return res.status(400).json({ error: 'token and new_password are required' });
+    }
+
+    const passwordError = validatePassword(new_password);
+    if (passwordError) {
+      return res.status(400).json({ error: passwordError });
+    }
+
+    const user = await queryOne(
+      `
+        SELECT id, password_hash, auth_provider, reset_password_token_hash, reset_password_expires_at
+        FROM users
+        WHERE reset_password_token_hash = ?
+        LIMIT 1
+      `,
+      [hashValue(token)],
+    );
+
+    if (!user || !user.reset_password_expires_at || new Date(user.reset_password_expires_at).getTime() < Date.now()) {
+      return res.status(400).json({ error: 'Password reset link is invalid or has expired' });
+    }
+
+    if (user.auth_provider !== 'password') {
+      return res.status(400).json({ error: 'Password reset is unavailable for Google sign-in accounts' });
+    }
+
+    const isSamePassword = await bcrypt.compare(String(new_password), user.password_hash);
+    if (isSamePassword) {
+      return res.status(400).json({ error: 'New password must be different from the current password' });
+    }
+
+    const passwordHash = await bcrypt.hash(String(new_password), 10);
+    await execute(
+      `
+        UPDATE users
+        SET password_hash = ?,
+            reset_password_token_hash = NULL,
+            reset_password_expires_at = NULL
+        WHERE id = ?
+      `,
+      [passwordHash, user.id],
+    );
+
+    return res.json({ success: true, message: 'Password reset successfully. You can sign in now.' });
+  }),
+);
+
+app.post(
+  '/api/auth/resend-verification',
+  asyncRoute(async (req, res) => {
+    const { email } = req.body || {};
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    const user = await queryOne(
+      'SELECT id, name, email, auth_provider, email_verified_at FROM users WHERE email = ? LIMIT 1',
+      [String(email).trim().toLowerCase()],
+    );
+
+    if (!user) {
+      return res.status(404).json({ error: 'No account found for this email' });
+    }
+
+    if (user.auth_provider !== 'password') {
+      return res.status(400).json({ error: 'This account signs in with Google and does not need email verification' });
+    }
+
+    if (user.email_verified_at) {
+      return res.status(400).json({ error: 'This email is already verified' });
+    }
+
+    await issueEmailVerification(user);
+    return res.json({ success: true, message: 'Verification email sent. Please check your inbox.' });
   }),
 );
 
@@ -212,11 +622,14 @@ app.get(
   '/api/auth/me',
   authenticateToken,
   asyncRoute(async (req, res) => {
-    const user = await queryOne('SELECT id, name, email, phone, role FROM users WHERE id = ? LIMIT 1', [req.user.id]);
+    const user = await queryOne(
+      'SELECT id, name, email, phone, role, auth_provider, email_verified_at FROM users WHERE id = ? LIMIT 1',
+      [req.user.id],
+    );
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
-    return res.json(user);
+    return res.json(serializeUser(user));
   }),
 );
 
@@ -235,9 +648,13 @@ app.post(
       return res.status(400).json({ error: passwordError });
     }
 
-    const user = await queryOne('SELECT id, password_hash FROM users WHERE id = ? LIMIT 1', [req.user.id]);
+    const user = await queryOne('SELECT id, password_hash, auth_provider FROM users WHERE id = ? LIMIT 1', [req.user.id]);
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (user.auth_provider === 'google') {
+      return res.status(400).json({ error: 'Password changes are unavailable for Google sign-in accounts' });
     }
 
     const isMatch = await bcrypt.compare(String(current_password), user.password_hash);
@@ -251,7 +668,10 @@ app.post(
     }
 
     const passwordHash = await bcrypt.hash(String(new_password), 10);
-    await execute('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, req.user.id]);
+    await execute(
+      'UPDATE users SET password_hash = ?, reset_password_token_hash = NULL, reset_password_expires_at = NULL WHERE id = ?',
+      [passwordHash, req.user.id],
+    );
 
     return res.json({ success: true });
   }),
@@ -341,7 +761,10 @@ app.post(
     }
 
     const passwordHash = await bcrypt.hash(String(new_password), 10);
-    await execute('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, owner.id]);
+    await execute(
+      'UPDATE users SET password_hash = ?, reset_password_token_hash = NULL, reset_password_expires_at = NULL WHERE id = ?',
+      [passwordHash, owner.id],
+    );
 
     return res.json({ success: true });
   }),
