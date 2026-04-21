@@ -124,6 +124,97 @@ const starterFormSchema = {
   ],
 };
 
+const playerFormSchema = {
+  steps: [
+    {
+      title: 'League Rules & Guidelines',
+      fields: [
+        {
+          id: 'guidelinesText',
+          type: 'info',
+          content:
+            'League Rules & Guidelines\n\n' +
+            '- Deadline Compliance: All required submissions must be completed on time.\n' +
+            '- Fair Play: Any form of cheating, manipulation, or unfair advantage will result in immediate disqualification.\n' +
+            '- Communication: Players must stay active and respond promptly in the official league group.\n' +
+            '- Match Scheduling: Matches must be played within the scheduled time. Delays without valid reason may lead to penalties.\n' +
+            '- Respect and Conduct: Maintain respectful behavior towards other players and organizers at all times.\n' +
+            '- No Last-Minute Withdrawals: Once registered, players cannot withdraw without valid reason. Entry fee is non-refundable.\n' +
+            '- Organizer Decisions: All decisions made by the organizers are final and binding.\n' +
+            '- Technical Issues: Any disputes or technical issues must be reported immediately with proof.\n' +
+            '- Rule Updates: Organizers reserve the right to update rules if necessary. Players will be informed.\n' +
+            '- Timely Payments: All team payments must be completed before the given deadline. No exceptions.\n' +
+            '- Payment value: A non-refundable fee of INR 250 + gst for registering for the auction. Once picked in the auction by a team, player needs to pay a non-refundable amount of INR 2500 + gst.',
+        },
+      ],
+    },
+    {
+      title: 'Player Information',
+      fields: [
+        { id: 'playerPhoto', type: 'text', label: 'Player Photo (URL or drive link)', required: true },
+        { id: 'fullName', type: 'text', label: 'Full Name', required: true },
+        { id: 'emailId', type: 'email', label: 'Email ID', required: true },
+        { id: 'mobileNumber', type: 'tel', label: 'Mobile Number', required: true },
+        { id: 'dateOfBirth', type: 'text', label: 'Date of Birth', required: true },
+        {
+          id: 'gender',
+          type: 'radio',
+          label: 'Gender',
+          options: ['Male', 'Female', 'Other', 'Prefer not to say'],
+          required: true,
+        },
+        { id: 'duprId', type: 'text', label: 'DUPR ID', required: true },
+        { id: 'doublesRating', type: 'text', label: 'Doubles Rating', required: true },
+        { id: 'singlesRating', type: 'text', label: 'Singles Rating', required: true },
+        {
+          id: 'dominantHand',
+          type: 'radio',
+          label: 'Dominant Hand',
+          options: ['Right', 'Left', 'Ambidextrous'],
+          required: true,
+        },
+        {
+          id: 'backhandStyle',
+          type: 'radio',
+          label: 'Backhand Style',
+          options: ['One-handed', 'Two-handed', 'Not sure'],
+          required: true,
+        },
+        {
+          id: 'experienceLevel',
+          type: 'select',
+          label: 'Experience Level',
+          options: ['Beginner', 'Intermediate', 'Advanced', 'Professional'],
+          required: true,
+        },
+        { id: 'playingStyle', type: 'textarea', label: 'Playing Style', required: true },
+        { id: 'pickleballJourney', type: 'textarea', label: 'Pickleball Journey', required: true },
+        { id: 'medicalConditions', type: 'textarea', label: 'Medical Conditions', required: false },
+        {
+          id: 'preferredCategories',
+          type: 'checkbox',
+          label: 'Preferred Categories',
+          options: ['Singles', 'Doubles', 'Mixed Doubles'],
+          required: true,
+        },
+        {
+          id: 'gameDayAvailability',
+          type: 'textarea',
+          label: 'Game Day Availability',
+          required: true,
+        },
+        {
+          id: 'declaration',
+          type: 'checkbox',
+          label: 'Declaration',
+          options: ['I hereby declare that the information provided is true and correct.'],
+          required: true,
+        },
+      ],
+    },
+  ],
+};
+
 async function ensureDatabase() {
   const connection = await mysql.createConnection({
     host: dbConfig.host,
@@ -153,7 +244,7 @@ async function createTables() {
       email_verification_expires_at DATETIME NULL DEFAULT NULL,
       reset_password_token_hash VARCHAR(255) NULL,
       reset_password_expires_at DATETIME NULL DEFAULT NULL,
-      role ENUM('admin', 'owner') NOT NULL DEFAULT 'owner',
+      role ENUM('admin', 'owner', 'player') NOT NULL DEFAULT 'owner',
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -165,6 +256,7 @@ async function createTables() {
       description TEXT,
       schema_json LONGTEXT NOT NULL,
       is_published TINYINT(1) NOT NULL DEFAULT 0,
+      target_role ENUM('owner', 'player', 'all') NOT NULL DEFAULT 'owner',
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -285,6 +377,19 @@ async function ensureUserColumns() {
       'ALTER TABLE users ADD COLUMN reset_password_expires_at DATETIME NULL DEFAULT NULL AFTER reset_password_token_hash',
     );
   }
+
+  await pool.query("ALTER TABLE users MODIFY COLUMN role ENUM('admin', 'owner', 'player') NOT NULL DEFAULT 'owner'");
+}
+
+async function ensureFormColumns() {
+  const [columns] = await pool.query('SHOW COLUMNS FROM forms');
+  const columnNames = new Set(columns.map((column) => column.Field));
+
+  if (!columnNames.has('target_role')) {
+    await pool.query("ALTER TABLE forms ADD COLUMN target_role ENUM('owner', 'player', 'all') NOT NULL DEFAULT 'owner'");
+  } else {
+    await pool.query("ALTER TABLE forms MODIFY COLUMN target_role ENUM('owner', 'player', 'all') NOT NULL DEFAULT 'owner'");
+  }
 }
 
 async function ensurePaymentDueColumns() {
@@ -403,6 +508,17 @@ async function seedDefaults() {
         1,
       ],
     );
+    await pool.query(
+      'INSERT INTO forms (id, title, description, schema_json, is_published, target_role) VALUES (?, ?, ?, ?, ?, ?)',
+      [
+        randomUUID(),
+        'Player Expression of Interest Form',
+        'Player registration and profile form.',
+        JSON.stringify(playerFormSchema),
+        1,
+        'player',
+      ],
+    );
   } else {
     // Auto-repair only if the flagship form schema is incomplete.
     const [flagshipRows] = await pool.query(
@@ -448,11 +564,34 @@ async function seedDefaults() {
     }
 
     if (needsRepair) {
-      await pool.query("UPDATE forms SET schema_json = ? WHERE id = ?", [
+      await pool.query("UPDATE forms SET schema_json = ?, target_role = 'owner' WHERE id = ?", [
         JSON.stringify(starterFormSchema),
         flagship.id,
       ]);
     }
+
+    if (flagship && !needsRepair) {
+      await pool.query("UPDATE forms SET target_role = 'owner' WHERE id = ?", [flagship.id]);
+    }
+  }
+
+  const [playerRows] = await pool.query(
+    "SELECT id FROM forms WHERE title = 'Player Expression of Interest Form' LIMIT 1",
+  );
+  if (playerRows.length === 0) {
+    await pool.query(
+      'INSERT INTO forms (id, title, description, schema_json, is_published, target_role) VALUES (?, ?, ?, ?, ?, ?)',
+      [
+        randomUUID(),
+        'Player Expression of Interest Form',
+        'Player registration and profile form.',
+        JSON.stringify(playerFormSchema),
+        1,
+        'player',
+      ],
+    );
+  } else {
+    await pool.query("UPDATE forms SET target_role = 'player' WHERE id = ?", [playerRows[0].id]);
   }
 }
 
@@ -471,6 +610,7 @@ export async function initDatabase() {
 
   await createTables();
   await ensureUserColumns();
+  await ensureFormColumns();
   await ensureSubmissionColumns();
   await ensurePaymentDueColumns();
   await ensurePaymentColumns();
