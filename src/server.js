@@ -23,7 +23,10 @@ const GOOGLE_CLIENT_IDS = String(process.env.GOOGLE_CLIENT_ID || '')
 const EMAIL_VERIFICATION_OTP_TTL_MINUTES = Number(process.env.EMAIL_VERIFICATION_OTP_TTL_MINUTES || 10);
 const PASSWORD_RESET_TTL_MINUTES = Number(process.env.PASSWORD_RESET_TTL_MINUTES || 30);
 
-const allowedOrigins = process.env.FRONTEND_URL.split(',');
+const allowedOrigins = String(process.env.FRONTEND_URL || 'http://localhost:5173')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
 app.use(
   cors({
@@ -82,6 +85,13 @@ function authenticateToken(req, res, next) {
 function requireAdmin(req, res, next) {
   if (req.user?.role !== 'admin') {
     return res.status(403).json({ error: 'Admin access required' });
+  }
+  return next();
+}
+
+function requireParticipant(req, res, next) {
+  if (!['owner', 'player'].includes(req.user?.role)) {
+    return res.status(403).json({ error: 'Owner or player access required' });
   }
   return next();
 }
@@ -166,6 +176,10 @@ function validatePassword(password) {
   }
 
   return null;
+}
+
+function normalizeRequestedRole(value) {
+  return value === 'player' ? 'player' : 'owner';
 }
 
 function hashValue(value) {
@@ -342,7 +356,7 @@ app.get('/health', (_req, res) => {
 app.post(
   '/api/auth/register',
   asyncRoute(async (req, res) => {
-    const { name, email, phone, password } = req.body || {};
+    const { name, email, phone, password, role: requestedRole } = req.body || {};
     if (!name || !email || !phone || !password) {
       return res.status(400).json({ error: 'name, email, phone and password are required' });
     }
@@ -358,7 +372,7 @@ app.post(
     }
 
     const countRow = await queryOne('SELECT COUNT(*) AS count FROM users');
-    const role = Number(countRow?.count || 0) === 0 ? 'admin' : 'owner';
+    const role = Number(countRow?.count || 0) === 0 ? 'admin' : normalizeRequestedRole(requestedRole);
     const id = randomUUID();
     const passwordHash = await bcrypt.hash(String(password), 10);
 
@@ -417,7 +431,8 @@ app.post(
 app.post(
   '/api/auth/google',
   asyncRoute(async (req, res) => {
-    const { credential } = req.body || {};
+    const { credential, role: requestedRole } = req.body || {};
+    const desiredRole = normalizeRequestedRole(requestedRole);
     const googleUser = await verifyGoogleCredential(credential);
 
     let user = await queryOne('SELECT * FROM users WHERE google_sub = ? LIMIT 1', [googleUser.sub]);
@@ -431,15 +446,15 @@ app.post(
 
       if (emailMatch) {
         await execute(
-          'UPDATE users SET google_sub = ?, name = CASE WHEN TRIM(COALESCE(name, \'\')) = \'\' THEN ? ELSE name END, email_verified_at = COALESCE(email_verified_at, CURRENT_TIMESTAMP) WHERE id = ?',
-          [googleUser.sub, googleUser.name, emailMatch.id],
+          "UPDATE users SET google_sub = ?, name = CASE WHEN TRIM(COALESCE(name, '')) = '' THEN ? ELSE name END, email_verified_at = COALESCE(email_verified_at, CURRENT_TIMESTAMP), role = CASE WHEN role = 'admin' THEN role ELSE ? END WHERE id = ?",
+          [googleUser.sub, googleUser.name, desiredRole, emailMatch.id],
         );
         user = await queryOne('SELECT * FROM users WHERE id = ? LIMIT 1', [emailMatch.id]);
       } else {
         const id = randomUUID();
         const passwordHash = await bcrypt.hash(randomUUID(), 10);
         const countRow = await queryOne('SELECT COUNT(*) AS count FROM users');
-        const role = Number(countRow?.count || 0) === 0 ? 'admin' : 'owner';
+        const role = Number(countRow?.count || 0) === 0 ? 'admin' : desiredRole;
 
         await execute(
           'INSERT INTO users (id, name, email, phone, password_hash, auth_provider, google_sub, role, email_verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)',
@@ -739,6 +754,52 @@ app.get(
   }),
 );
 
+app.get(
+  '/api/admin/players',
+  authenticateToken,
+  requireAdmin,
+  asyncRoute(async (_req, res) => {
+    const players = await queryAll(
+      `
+        SELECT
+          u.name,
+          u.id AS user_id,
+          u.email,
+          u.phone,
+          u.created_at AS registered_at,
+          s.id AS submission_id,
+          s.form_id,
+          s.status AS submission_status,
+          s.created_at AS submitted_at,
+          s.approved_at,
+          f.title AS form_title,
+          s.data_json
+        FROM users u
+        LEFT JOIN submissions s
+          ON s.id = (
+            SELECT s2.id
+            FROM submissions s2
+            WHERE s2.user_id = u.id
+            ORDER BY
+              CASE WHEN s2.status = 'approved' THEN 0 ELSE 1 END,
+              s2.created_at DESC
+            LIMIT 1
+          )
+        LEFT JOIN forms f ON f.id = s.form_id
+        WHERE u.role = 'player'
+        ORDER BY u.created_at DESC, u.name ASC
+      `,
+    );
+
+    return res.json(
+      players.map((player) => ({
+        ...player,
+        data: parseJsonField(player.data_json, {}),
+      })),
+    );
+  }),
+);
+
 app.post(
   '/api/admin/users/:userId/reset-password',
   authenticateToken,
@@ -751,19 +812,19 @@ app.post(
       return res.status(400).json({ error: passwordError });
     }
 
-    const owner = await queryOne('SELECT id, role FROM users WHERE id = ? LIMIT 1', [req.params.userId]);
-    if (!owner) {
-      return res.status(404).json({ error: 'Owner not found' });
+    const account = await queryOne('SELECT id, role FROM users WHERE id = ? LIMIT 1', [req.params.userId]);
+    if (!account) {
+      return res.status(404).json({ error: 'User not found' });
     }
 
-    if (owner.role !== 'owner') {
-      return res.status(400).json({ error: 'Only owner passwords can be reset here' });
+    if (!['owner', 'player'].includes(account.role)) {
+      return res.status(400).json({ error: 'Only owner or player passwords can be reset here' });
     }
 
     const passwordHash = await bcrypt.hash(String(new_password), 10);
     await execute(
       'UPDATE users SET password_hash = ?, reset_password_token_hash = NULL, reset_password_expires_at = NULL WHERE id = ?',
-      [passwordHash, owner.id],
+      [passwordHash, account.id],
     );
 
     return res.json({ success: true });
@@ -895,6 +956,7 @@ app.get(
           u.name AS owner_name,
           u.email AS owner_email,
           u.phone AS owner_phone,
+          u.role AS payer_role,
           pd.title AS due_title,
           pd.description AS due_description,
           pd.due_date,
@@ -949,12 +1011,14 @@ app.get(
   '/api/forms',
   authenticateToken,
   asyncRoute(async (req, res) => {
-    const sql =
+    const forms =
       req.user.role === 'admin'
-        ? 'SELECT * FROM forms ORDER BY created_at DESC'
-        : 'SELECT * FROM forms WHERE is_published = 1 ORDER BY created_at DESC';
+        ? await queryAll('SELECT * FROM forms ORDER BY created_at DESC')
+        : await queryAll(
+            "SELECT * FROM forms WHERE is_published = 1 AND (target_role = ? OR target_role = 'all') ORDER BY created_at DESC",
+            [req.user.role],
+          );
 
-    const forms = await queryAll(sql);
     return res.json(
       forms.map((form) => ({
         ...form,
@@ -967,11 +1031,8 @@ app.get(
 app.get(
   '/api/owner/payments',
   authenticateToken,
+  requireParticipant,
   asyncRoute(async (req, res) => {
-    if (req.user.role !== 'owner') {
-      return res.status(403).json({ error: 'Owner access required' });
-    }
-
     const dues = await queryAll(
       `
         SELECT pd.*
@@ -1027,11 +1088,8 @@ app.get(
 app.post(
   '/api/owner/payments/orders',
   authenticateToken,
+  requireParticipant,
   asyncRoute(async (req, res) => {
-    if (req.user.role !== 'owner') {
-      return res.status(403).json({ error: 'Owner access required' });
-    }
-
     if (!requireRazorpayConfig(res)) {
       return undefined;
     }
@@ -1101,11 +1159,8 @@ app.post(
 app.post(
   '/api/owner/payments/verify',
   authenticateToken,
+  requireParticipant,
   asyncRoute(async (req, res) => {
-    if (req.user.role !== 'owner') {
-      return res.status(403).json({ error: 'Owner access required' });
-    }
-
     if (!requireRazorpayConfig(res)) {
       return undefined;
     }
@@ -1180,11 +1235,8 @@ app.post(
 app.post(
   '/api/owner/payments/:id/status',
   authenticateToken,
+  requireParticipant,
   asyncRoute(async (req, res) => {
-    if (req.user.role !== 'owner') {
-      return res.status(403).json({ error: 'Owner access required' });
-    }
-
     const { status, failure_reason } = req.body || {};
     const allowedStatuses = new Set(['failed', 'cancelled']);
     if (!allowedStatuses.has(status)) {
@@ -1221,8 +1273,14 @@ app.get(
       return res.status(404).json({ error: 'Form not found' });
     }
 
-    if (req.user.role !== 'admin' && Number(form.is_published) !== 1) {
-      return res.status(403).json({ error: 'Form is not published' });
+    if (req.user.role !== 'admin') {
+      if (Number(form.is_published) !== 1) {
+        return res.status(403).json({ error: 'Form is not published' });
+      }
+
+      if (form.target_role !== 'all' && form.target_role !== req.user.role) {
+        return res.status(403).json({ error: 'This form is not available for your role' });
+      }
     }
 
     return res.json({
@@ -1237,15 +1295,16 @@ app.post(
   authenticateToken,
   requireAdmin,
   asyncRoute(async (req, res) => {
-    const { title, description, schema, is_published } = req.body || {};
+    const { title, description, schema, is_published, target_role } = req.body || {};
     if (!title || !schema) {
       return res.status(400).json({ error: 'title and schema are required' });
     }
 
+    const normalizedTargetRole = ['owner', 'player', 'all'].includes(target_role) ? target_role : 'owner';
     const id = randomUUID();
     await execute(
-      'INSERT INTO forms (id, title, description, schema_json, is_published) VALUES (?, ?, ?, ?, ?)',
-      [id, title, description || '', JSON.stringify(schema), is_published ? 1 : 0],
+      'INSERT INTO forms (id, title, description, schema_json, is_published, target_role) VALUES (?, ?, ?, ?, ?, ?)',
+      [id, title, description || '', JSON.stringify(schema), is_published ? 1 : 0, normalizedTargetRole],
     );
 
     return res.json({ id });
@@ -1257,10 +1316,18 @@ app.put(
   authenticateToken,
   requireAdmin,
   asyncRoute(async (req, res) => {
-    const { title, description, schema, is_published } = req.body || {};
+    const { title, description, schema, is_published, target_role } = req.body || {};
+    const existingForm = await queryOne('SELECT id, target_role FROM forms WHERE id = ? LIMIT 1', [req.params.id]);
+    if (!existingForm) {
+      return res.status(404).json({ error: 'Form not found' });
+    }
+
+    const normalizedTargetRole = ['owner', 'player', 'all'].includes(target_role)
+      ? target_role
+      : (existingForm.target_role || 'owner');
     await execute(
-      'UPDATE forms SET title = ?, description = ?, schema_json = ?, is_published = ? WHERE id = ?',
-      [title, description || '', JSON.stringify(schema), is_published ? 1 : 0, req.params.id],
+      'UPDATE forms SET title = ?, description = ?, schema_json = ?, is_published = ?, target_role = ? WHERE id = ?',
+      [title, description || '', JSON.stringify(schema), is_published ? 1 : 0, normalizedTargetRole, req.params.id],
     );
     return res.json({ success: true });
   }),
@@ -1369,7 +1436,7 @@ app.get(
     const sql =
       req.user.role === 'admin'
         ? `
-          SELECT s.*, f.title AS form_title, u.name AS user_name, u.email AS user_email
+          SELECT s.*, f.title AS form_title, u.name AS user_name, u.email AS user_email, u.role AS user_role
           FROM submissions s
           JOIN forms f ON s.form_id = f.id
           JOIN users u ON s.user_id = u.id

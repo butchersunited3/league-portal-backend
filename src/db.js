@@ -124,6 +124,154 @@ const starterFormSchema = {
   ],
 };
 
+const playerFormSchema = {
+  steps: [
+    {
+      title: 'League Rules & Guidelines',
+      fields: [
+        {
+          id: 'guidelinesText',
+          type: 'info',
+          content:
+            'League Rules & Guidelines\n\n' +
+            '- Deadline Compliance: All required submissions must be completed on time.\n' +
+            '- Fair Play: Any form of cheating, manipulation, or unfair advantage will result in immediate disqualification.\n' +
+            '- Communication: Players must stay active and respond promptly in the official league group.\n' +
+            '- Match Scheduling: Matches must be played within the scheduled time. Delays without valid reason may lead to penalties.\n' +
+            '- Respect and Conduct: Maintain respectful behavior towards other players and organizers at all times.\n' +
+            '- No Last-Minute Withdrawals: Once registered, players cannot withdraw without valid reason. Entry fee is non-refundable.\n' +
+            '- Organizer Decisions: All decisions made by the organizers are final and binding.\n' +
+            '- Technical Issues: Any disputes or technical issues must be reported immediately with proof.\n' +
+            '- Rule Updates: Organizers reserve the right to update rules if necessary. Players will be informed.\n' +
+            '- Timely Payments: All team payments must be completed before the given deadline. No exceptions.\n' +
+            '- Payment value: A non-refundable fee of INR 250 + gst for registering for the auction. Once picked in the auction by a team, player needs to pay a non-refundable amount of INR 2500 + gst.',
+        },
+      ],
+    },
+    {
+      title: 'Player Information',
+      fields: [
+        { id: 'playerPhoto', type: 'text', label: 'Player Photo (URL or drive link)', required: true },
+        { id: 'fullName', type: 'text', label: 'Full Name', required: true },
+        { id: 'emailId', type: 'email', label: 'Email ID', required: true },
+        { id: 'mobileNumber', type: 'tel', label: 'Mobile Number', required: true },
+        { id: 'dateOfBirth', type: 'text', label: 'Date of Birth', required: true },
+        {
+          id: 'gender',
+          type: 'radio',
+          label: 'Gender',
+          options: ['Male', 'Female', 'Other', 'Prefer not to say'],
+          required: true,
+        },
+        { id: 'duprId', type: 'text', label: 'DUPR ID', required: true },
+        { id: 'doublesRating', type: 'text', label: 'Doubles Rating', required: true },
+        { id: 'singlesRating', type: 'text', label: 'Singles Rating', required: true },
+        {
+          id: 'dominantHand',
+          type: 'radio',
+          label: 'Dominant Hand',
+          options: ['Right', 'Left', 'Ambidextrous'],
+          required: true,
+        },
+        {
+          id: 'backhandStyle',
+          type: 'radio',
+          label: 'Backhand Style',
+          options: ['One-handed', 'Two-handed', 'Not sure'],
+          required: true,
+        },
+        {
+          id: 'experienceLevel',
+          type: 'select',
+          label: 'Experience Level',
+          options: ['Beginner', 'Intermediate', 'Advanced', 'Professional'],
+          required: true,
+        },
+        { id: 'playingStyle', type: 'textarea', label: 'Playing Style', required: true },
+        { id: 'pickleballJourney', type: 'textarea', label: 'Pickleball Journey', required: true },
+        { id: 'medicalConditions', type: 'textarea', label: 'Medical Conditions', required: false },
+        {
+          id: 'preferredCategories',
+          type: 'checkbox',
+          label: 'Preferred Categories',
+          options: ['Singles', 'Doubles', 'Mixed Doubles'],
+          required: true,
+        },
+        {
+          id: 'gameDayAvailability',
+          type: 'textarea',
+          label: 'Game Day Availability',
+          required: true,
+        },
+        {
+          id: 'declaration',
+          type: 'checkbox',
+          label: 'Declaration',
+          options: ['I hereby declare that the information provided is true and correct.'],
+          required: true,
+        },
+      ],
+    },
+    {
+      title: 'Pre-Registration Questionnaire',
+      fields: [
+        {
+          id: 'playerMcq1',
+          type: 'radio',
+          label:
+            'Part 1 - Tournament Stamina & Pacing: It is the afternoon of Day 2 in a three-day league. You are physically drained, and your opponents are playing a high-pace, energetic game. How do you adapt?',
+          options: [
+            'A) Push through the fatigue and try to overpower them with aggressive drives to keep the points as short as possible.',
+            'B) Communicate with your partner to slow the game down, prioritizing drops, dinks, and resets to conserve energy while breaking their rhythm.',
+            'C) Stick strictly to the exact same game plan you used on Day 1, trusting that your fundamentals will outlast your fatigue.',
+            'D) Accept that you are tired and play a high-risk, low-percentage game hoping for quick winners.',
+          ],
+          required: true,
+        },
+        {
+          id: 'playerMcq2',
+          type: 'radio',
+          label:
+            'Part 2 - Doubles Chemistry & Ego Management: In a crucial doubles match, your opponents realize your partner is struggling with their third-shot drops and begin isolating them completely. Your partner is getting visibly frustrated. What is your immediate response?',
+          options: [
+            'A) Start poaching aggressively and stepping in front of them to take the shots yourself.',
+            'B) Call a timeout and try to correct their swing mechanics and footwork on the sidelines.',
+            'C) Tap paddles, offer a quick word of encouragement, and shift your court positioning slightly to cover the middle without undermining their confidence.',
+            'D) Show visible frustration so they understand the gravity of the match and focus harder.',
+          ],
+          required: true,
+        },
+        {
+          id: 'playerMcq3',
+          type: 'radio',
+          label:
+            'Part 2 - Doubles Chemistry & Ego Management: You come from a background in fast-paced racket sports and love driving the ball. However, your current opponents are elite at neutralizing pace and resetting the ball into the kitchen. What is your play?',
+          options: [
+            'A) Drive the ball even harder, trusting that superior power will eventually break through their blocks.',
+            'B) Target their bodies exclusively with your drives to force an awkward deflection.',
+            'C) Completely abandon your primary weapon, check your ego, and commit to a patient, soft dinking game to expose their impatience.',
+            'D) Keep driving the ball but express frustration to your partner that the opponents are not playing real pickleball.',
+          ],
+          required: true,
+        },
+        {
+          id: 'playerMcq4',
+          type: 'radio',
+          label:
+            'Part 3 - Mental Resilience: You suffer a crushing, one-sided defeat (for example, losing 0-6) in your opening match of the tournament. You have another match scheduled in forty-five minutes. How do you spend that time?',
+          options: [
+            'A) Mentally write off the entire tournament as a bad weekend and decide to just play the rest of the matches casually for fun.',
+            'B) Immediately switch your paddle, change your warm-up routine, and try a completely different playstyle in the next match.',
+            'C) Briefly analyze the specific unforced errors or tactical mistakes that caused the loss, reset your focus, and step onto the court trusting your core game.',
+            'D) Vent to your teammates about the court surface, the wind, or the opponents questionable line calls to get it out of your system.',
+          ],
+          required: true,
+        },
+      ],
+    },
+  ],
+};
+
 async function ensureDatabase() {
   const connection = await mysql.createConnection({
     host: dbConfig.host,
@@ -153,7 +301,7 @@ async function createTables() {
       email_verification_expires_at DATETIME NULL DEFAULT NULL,
       reset_password_token_hash VARCHAR(255) NULL,
       reset_password_expires_at DATETIME NULL DEFAULT NULL,
-      role ENUM('admin', 'owner') NOT NULL DEFAULT 'owner',
+      role ENUM('admin', 'owner', 'player') NOT NULL DEFAULT 'owner',
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -165,6 +313,7 @@ async function createTables() {
       description TEXT,
       schema_json LONGTEXT NOT NULL,
       is_published TINYINT(1) NOT NULL DEFAULT 0,
+      target_role ENUM('owner', 'player', 'all') NOT NULL DEFAULT 'owner',
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -285,6 +434,19 @@ async function ensureUserColumns() {
       'ALTER TABLE users ADD COLUMN reset_password_expires_at DATETIME NULL DEFAULT NULL AFTER reset_password_token_hash',
     );
   }
+
+  await pool.query("ALTER TABLE users MODIFY COLUMN role ENUM('admin', 'owner', 'player') NOT NULL DEFAULT 'owner'");
+}
+
+async function ensureFormColumns() {
+  const [columns] = await pool.query('SHOW COLUMNS FROM forms');
+  const columnNames = new Set(columns.map((column) => column.Field));
+
+  if (!columnNames.has('target_role')) {
+    await pool.query("ALTER TABLE forms ADD COLUMN target_role ENUM('owner', 'player', 'all') NOT NULL DEFAULT 'owner'");
+  } else {
+    await pool.query("ALTER TABLE forms MODIFY COLUMN target_role ENUM('owner', 'player', 'all') NOT NULL DEFAULT 'owner'");
+  }
 }
 
 async function ensurePaymentDueColumns() {
@@ -403,6 +565,17 @@ async function seedDefaults() {
         1,
       ],
     );
+    await pool.query(
+      'INSERT INTO forms (id, title, description, schema_json, is_published, target_role) VALUES (?, ?, ?, ?, ?, ?)',
+      [
+        randomUUID(),
+        'Player Expression of Interest Form',
+        'Player registration and profile form.',
+        JSON.stringify(playerFormSchema),
+        1,
+        'player',
+      ],
+    );
   } else {
     // Auto-repair only if the flagship form schema is incomplete.
     const [flagshipRows] = await pool.query(
@@ -448,10 +621,57 @@ async function seedDefaults() {
     }
 
     if (needsRepair) {
-      await pool.query("UPDATE forms SET schema_json = ? WHERE id = ?", [
+      await pool.query("UPDATE forms SET schema_json = ?, target_role = 'owner' WHERE id = ?", [
         JSON.stringify(starterFormSchema),
         flagship.id,
       ]);
+    }
+
+    if (flagship && !needsRepair) {
+      await pool.query("UPDATE forms SET target_role = 'owner' WHERE id = ?", [flagship.id]);
+    }
+  }
+
+  const [playerRows] = await pool.query(
+    "SELECT id, schema_json FROM forms WHERE title = 'Player Expression of Interest Form' LIMIT 1",
+  );
+  if (playerRows.length === 0) {
+    await pool.query(
+      'INSERT INTO forms (id, title, description, schema_json, is_published, target_role) VALUES (?, ?, ?, ?, ?, ?)',
+      [
+        randomUUID(),
+        'Player Expression of Interest Form',
+        'Player registration and profile form.',
+        JSON.stringify(playerFormSchema),
+        1,
+        'player',
+      ],
+    );
+  } else {
+    const playerForm = playerRows[0];
+    let needsPlayerRepair = false;
+
+    try {
+      const parsedSchema = JSON.parse(playerForm.schema_json || '{}');
+      const steps = Array.isArray(parsedSchema?.steps) ? parsedSchema.steps : [];
+      const titles = new Set(steps.map((step) => step?.title).filter(Boolean));
+      const hasQuestionnaireStep = titles.has('Pre-Registration Questionnaire');
+      const fieldIds = new Set(steps.flatMap((step) => step?.fields || []).map((field) => field?.id).filter(Boolean));
+      const requiredFieldIds = ['playerMcq1', 'playerMcq2', 'playerMcq3', 'playerMcq4'];
+      const hasQuestionnaireFields = requiredFieldIds.every((id) => fieldIds.has(id));
+
+      needsPlayerRepair = !hasQuestionnaireStep || !hasQuestionnaireFields;
+    } catch {
+      needsPlayerRepair = true;
+    }
+
+    if (needsPlayerRepair) {
+      await pool.query("UPDATE forms SET schema_json = ?, target_role = 'player' WHERE id = ?", [
+        JSON.stringify(playerFormSchema),
+        playerForm.id,
+      ]);
+    } else {
+      await pool.query("UPDATE forms SET target_role = 'player' WHERE id = ?", [playerForm.id]);
     }
   }
 }
@@ -471,6 +691,7 @@ export async function initDatabase() {
 
   await createTables();
   await ensureUserColumns();
+  await ensureFormColumns();
   await ensureSubmissionColumns();
   await ensurePaymentDueColumns();
   await ensurePaymentColumns();
