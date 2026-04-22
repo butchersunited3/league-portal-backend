@@ -212,6 +212,63 @@ const playerFormSchema = {
         },
       ],
     },
+    {
+      title: 'Pre-Registration Questionnaire',
+      fields: [
+        {
+          id: 'playerMcq1',
+          type: 'radio',
+          label:
+            'Part 1 - Tournament Stamina & Pacing: It is the afternoon of Day 2 in a three-day league. You are physically drained, and your opponents are playing a high-pace, energetic game. How do you adapt?',
+          options: [
+            'A) Push through the fatigue and try to overpower them with aggressive drives to keep the points as short as possible.',
+            'B) Communicate with your partner to slow the game down, prioritizing drops, dinks, and resets to conserve energy while breaking their rhythm.',
+            'C) Stick strictly to the exact same game plan you used on Day 1, trusting that your fundamentals will outlast your fatigue.',
+            'D) Accept that you are tired and play a high-risk, low-percentage game hoping for quick winners.',
+          ],
+          required: true,
+        },
+        {
+          id: 'playerMcq2',
+          type: 'radio',
+          label:
+            'Part 2 - Doubles Chemistry & Ego Management: In a crucial doubles match, your opponents realize your partner is struggling with their third-shot drops and begin isolating them completely. Your partner is getting visibly frustrated. What is your immediate response?',
+          options: [
+            'A) Start poaching aggressively and stepping in front of them to take the shots yourself.',
+            'B) Call a timeout and try to correct their swing mechanics and footwork on the sidelines.',
+            'C) Tap paddles, offer a quick word of encouragement, and shift your court positioning slightly to cover the middle without undermining their confidence.',
+            'D) Show visible frustration so they understand the gravity of the match and focus harder.',
+          ],
+          required: true,
+        },
+        {
+          id: 'playerMcq3',
+          type: 'radio',
+          label:
+            'Part 2 - Doubles Chemistry & Ego Management: You come from a background in fast-paced racket sports and love driving the ball. However, your current opponents are elite at neutralizing pace and resetting the ball into the kitchen. What is your play?',
+          options: [
+            'A) Drive the ball even harder, trusting that superior power will eventually break through their blocks.',
+            'B) Target their bodies exclusively with your drives to force an awkward deflection.',
+            'C) Completely abandon your primary weapon, check your ego, and commit to a patient, soft dinking game to expose their impatience.',
+            'D) Keep driving the ball but express frustration to your partner that the opponents are not playing real pickleball.',
+          ],
+          required: true,
+        },
+        {
+          id: 'playerMcq4',
+          type: 'radio',
+          label:
+            'Part 3 - Mental Resilience: You suffer a crushing, one-sided defeat (for example, losing 0-6) in your opening match of the tournament. You have another match scheduled in forty-five minutes. How do you spend that time?',
+          options: [
+            'A) Mentally write off the entire tournament as a bad weekend and decide to just play the rest of the matches casually for fun.',
+            'B) Immediately switch your paddle, change your warm-up routine, and try a completely different playstyle in the next match.',
+            'C) Briefly analyze the specific unforced errors or tactical mistakes that caused the loss, reset your focus, and step onto the court trusting your core game.',
+            'D) Vent to your teammates about the court surface, the wind, or the opponents questionable line calls to get it out of your system.',
+          ],
+          required: true,
+        },
+      ],
+    },
   ],
 };
 
@@ -576,7 +633,7 @@ async function seedDefaults() {
   }
 
   const [playerRows] = await pool.query(
-    "SELECT id FROM forms WHERE title = 'Player Expression of Interest Form' LIMIT 1",
+    "SELECT id, schema_json FROM forms WHERE title = 'Player Expression of Interest Form' LIMIT 1",
   );
   if (playerRows.length === 0) {
     await pool.query(
@@ -591,7 +648,31 @@ async function seedDefaults() {
       ],
     );
   } else {
-    await pool.query("UPDATE forms SET target_role = 'player' WHERE id = ?", [playerRows[0].id]);
+    const playerForm = playerRows[0];
+    let needsPlayerRepair = false;
+
+    try {
+      const parsedSchema = JSON.parse(playerForm.schema_json || '{}');
+      const steps = Array.isArray(parsedSchema?.steps) ? parsedSchema.steps : [];
+      const titles = new Set(steps.map((step) => step?.title).filter(Boolean));
+      const hasQuestionnaireStep = titles.has('Pre-Registration Questionnaire');
+      const fieldIds = new Set(steps.flatMap((step) => step?.fields || []).map((field) => field?.id).filter(Boolean));
+      const requiredFieldIds = ['playerMcq1', 'playerMcq2', 'playerMcq3', 'playerMcq4'];
+      const hasQuestionnaireFields = requiredFieldIds.every((id) => fieldIds.has(id));
+
+      needsPlayerRepair = !hasQuestionnaireStep || !hasQuestionnaireFields;
+    } catch {
+      needsPlayerRepair = true;
+    }
+
+    if (needsPlayerRepair) {
+      await pool.query("UPDATE forms SET schema_json = ?, target_role = 'player' WHERE id = ?", [
+        JSON.stringify(playerFormSchema),
+        playerForm.id,
+      ]);
+    } else {
+      await pool.query("UPDATE forms SET target_role = 'player' WHERE id = ?", [playerForm.id]);
+    }
   }
 }
 

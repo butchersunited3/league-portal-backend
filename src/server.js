@@ -956,6 +956,7 @@ app.get(
           u.name AS owner_name,
           u.email AS owner_email,
           u.phone AS owner_phone,
+          u.role AS payer_role,
           pd.title AS due_title,
           pd.description AS due_description,
           pd.due_date,
