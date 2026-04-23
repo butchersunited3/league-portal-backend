@@ -155,7 +155,7 @@ const playerFormSchema = {
         { id: 'fullName', type: 'text', label: 'Full Name', required: true },
         { id: 'emailId', type: 'email', label: 'Email ID', required: true },
         { id: 'mobileNumber', type: 'tel', label: 'Mobile Number', required: true },
-        { id: 'dateOfBirth', type: 'text', label: 'Date of Birth', required: true },
+        { id: 'dateOfBirth', type: 'date', label: 'Date of Birth', required: true },
         {
           id: 'gender',
           type: 'radio',

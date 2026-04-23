@@ -499,22 +499,24 @@ app.post(
     const passwordHash = await bcrypt.hash(String(password), 10);
 
     await execute(
-      'INSERT INTO users (id, name, email, phone, password_hash, auth_provider, role, email_verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [id, String(name).trim(), normalizedEmail, String(phone).trim(), passwordHash, 'password', role, null],
+      'INSERT INTO users (id, name, email, phone, password_hash, auth_provider, role, email_verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)',
+      [id, String(name).trim(), normalizedEmail, String(phone).trim(), passwordHash, 'password', role],
     );
 
-    const user = { id, name: String(name).trim(), email: normalizedEmail, phone: String(phone).trim(), role, auth_provider: 'password' };
-    try {
-      await issueEmailVerification(user);
-    } catch (error) {
-      await execute('DELETE FROM users WHERE id = ?', [id]);
-      throw error;
-    }
-
-    return res.status(201).json({
-      requiresEmailVerification: true,
+    const user = {
+      id,
+      name: String(name).trim(),
       email: normalizedEmail,
-      message: 'Registration successful. We sent a verification code to your email.',
+      phone: String(phone).trim(),
+      role,
+      auth_provider: 'password',
+      email_verified_at: new Date(),
+    };
+    const payload = serializeUser(user);
+    return res.status(201).json({
+      token: createToken(payload),
+      user: payload,
+      message: 'Registration successful.',
     });
   }),
 );
@@ -1674,14 +1676,14 @@ app.get(
     const sql =
       req.user.role === 'admin'
         ? `
-          SELECT s.*, f.title AS form_title, u.name AS user_name, u.email AS user_email, u.role AS user_role
+          SELECT s.*, f.title AS form_title, f.schema_json, u.name AS user_name, u.email AS user_email, u.role AS user_role
           FROM submissions s
           JOIN forms f ON s.form_id = f.id
           JOIN users u ON s.user_id = u.id
           ORDER BY s.created_at DESC
         `
         : `
-          SELECT s.*, f.title AS form_title
+          SELECT s.*, f.title AS form_title, f.schema_json
           FROM submissions s
           JOIN forms f ON s.form_id = f.id
           WHERE s.user_id = ?
@@ -1695,6 +1697,7 @@ app.get(
       submissions.map((submission) => ({
         ...submission,
         data: parseJsonField(submission.data_json, {}),
+        schema: parseJsonField(submission.schema_json, { steps: [] }),
       })),
     );
   }),
