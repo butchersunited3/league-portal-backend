@@ -5,6 +5,8 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { randomUUID } from 'crypto';
+import multer from 'multer';
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { execute, initDatabase, queryAll, queryOne } from './db.js';
 
 const app = express();
@@ -16,6 +18,9 @@ const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || '';
 const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || '';
 const RESEND_EMAIL_API = process.env.RESEND_EMAIL_API || '';
 const RESEND_FROM_EMAIL = process.env.RESEND_FROM_EMAIL || 'ReadySetLeague <onboarding@resend.dev>';
+const AWS_REGION = process.env.AWS_REGION || 'ap-south-1';
+const S3_BUCKET_NAME = process.env.S3_BUCKET_NAME || '';
+const S3_PUBLIC_BASE_URL = String(process.env.S3_PUBLIC_BASE_URL || '').replace(/\/$/, '');
 const GOOGLE_CLIENT_IDS = String(process.env.GOOGLE_CLIENT_ID || '')
   .split(',')
   .map((value) => value.trim())
@@ -41,6 +46,24 @@ app.use(
   })
 )
 app.use(express.json());
+
+const imageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 1024 * 1024 - 1,
+    files: 1,
+  },
+  fileFilter: (_req, file, callback) => {
+    if (['image/jpeg', 'image/png'].includes(file.mimetype)) {
+      callback(null, true);
+      return;
+    }
+
+    callback(new Error('Only JPG, JPEG, and PNG images are allowed'));
+  },
+});
+
+const s3Client = new S3Client({ region: AWS_REGION });
 
 function createToken(user) {
   return jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
@@ -128,6 +151,105 @@ function requireRazorpayConfig(res) {
     return false;
   }
   return true;
+}
+
+function requireS3Config(res) {
+  if (!S3_BUCKET_NAME) {
+    res.status(500).json({ error: 'S3 image uploads are not configured on the server' });
+    return false;
+  }
+  return true;
+}
+
+function getImageExtension(mimeType) {
+  return mimeType === 'image/png' ? 'png' : 'jpg';
+}
+
+function createSafeFileBase(value) {
+  const normalized = String(value || '')
+    .trim()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-zA-Z0-9_-]/g, '')
+    .replace(/_+/g, '_')
+    .slice(0, 80);
+
+  return normalized || 'image';
+}
+
+function buildS3Url(key) {
+  if (S3_PUBLIC_BASE_URL) {
+    return `${S3_PUBLIC_BASE_URL}/${key}`;
+  }
+
+  return `https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${key}`;
+}
+
+function normalizePaymentTargetRole(value) {
+  return ['owner', 'player', 'all'].includes(value) ? value : 'all';
+}
+
+function getRequiredPaymentDueIds(schema) {
+  const steps = Array.isArray(schema?.steps) ? schema.steps : [];
+  return steps
+    .flatMap((step) => (Array.isArray(step?.fields) ? step.fields : []))
+    .filter((field) => field?.type === 'payment_due' && field.required !== false && field.payment_due_id)
+    .map((field) => String(field.payment_due_id));
+}
+
+async function prepareSchemaPaymentDues({ schema, formId, formTitle, targetRole, adminId }) {
+  const steps = Array.isArray(schema?.steps) ? schema.steps : [];
+  const normalizedTargetRole = normalizePaymentTargetRole(targetRole);
+
+  for (const step of steps) {
+    const fields = Array.isArray(step?.fields) ? step.fields : [];
+
+    for (const field of fields) {
+      if (field?.type !== 'payment_due') {
+        continue;
+      }
+
+      const amount = parseAmount(field.amount);
+      if (!field.label || amount === null) {
+        throw new Error('Payment due fields need a label and valid amount');
+      }
+
+      const dueTitle = String(field.label).trim();
+      const dueDescription = String(field.content || field.placeholder || `Required payment for ${formTitle}`).trim();
+      const currency = normalizeCurrency(field.currency);
+      const existingDueId = typeof field.payment_due_id === 'string' ? field.payment_due_id.trim() : '';
+
+      if (existingDueId) {
+        const existingDue = await queryOne('SELECT id FROM payment_dues WHERE id = ? LIMIT 1', [existingDueId]);
+        if (existingDue) {
+          await execute(
+            `
+              UPDATE payment_dues
+              SET title = ?, description = ?, amount = ?, currency = ?, is_active = 1, target_role = ?, source_form_id = ?, source_field_id = ?
+              WHERE id = ?
+            `,
+            [dueTitle, dueDescription, amount, currency, normalizedTargetRole, formId, field.id || null, existingDueId],
+          );
+          field.payment_due_id = existingDueId;
+          field.required = true;
+          continue;
+        }
+      }
+
+      const dueId = randomUUID();
+      await execute(
+        `
+          INSERT INTO payment_dues (id, title, description, amount, currency, due_date, is_active, target_role, source_form_id, source_field_id, created_by)
+          VALUES (?, ?, ?, ?, ?, NULL, 1, ?, ?, ?, ?)
+        `,
+        [dueId, dueTitle, dueDescription, amount, currency, normalizedTargetRole, formId, field.id || null, adminId],
+      );
+
+      field.payment_due_id = dueId;
+      field.required = true;
+    }
+  }
+
+  return schema;
 }
 
 async function createRazorpayOrder({ amount, currency, receipt, notes }) {
@@ -867,7 +989,7 @@ app.post(
   authenticateToken,
   requireAdmin,
   asyncRoute(async (req, res) => {
-    const { title, description, amount, currency, due_date, is_active } = req.body || {};
+    const { title, description, amount, currency, due_date, is_active, target_role } = req.body || {};
     const normalizedAmount = parseAmount(amount);
 
     if (!title || normalizedAmount === null) {
@@ -883,8 +1005,8 @@ app.post(
 
     await execute(
       `
-        INSERT INTO payment_dues (id, title, description, amount, currency, due_date, is_active, created_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO payment_dues (id, title, description, amount, currency, due_date, is_active, target_role, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         id,
@@ -894,6 +1016,7 @@ app.post(
         normalizedCurrency,
         normalizedDueDate ? normalizedDueDate : null,
         is_active === false ? 0 : 1,
+        normalizePaymentTargetRole(target_role),
         req.user.id,
       ],
     );
@@ -912,7 +1035,7 @@ app.put(
       return res.status(404).json({ error: 'Payment due not found' });
     }
 
-    const { title, description, amount, currency, due_date, is_active } = req.body || {};
+    const { title, description, amount, currency, due_date, is_active, target_role } = req.body || {};
     const normalizedAmount = parseAmount(amount);
     if (!title || normalizedAmount === null) {
       return res.status(400).json({ error: 'title and a valid amount are required' });
@@ -926,7 +1049,7 @@ app.put(
     await execute(
       `
         UPDATE payment_dues
-        SET title = ?, description = ?, amount = ?, currency = ?, due_date = ?, is_active = ?
+        SET title = ?, description = ?, amount = ?, currency = ?, due_date = ?, is_active = ?, target_role = ?
         WHERE id = ?
       `,
       [
@@ -936,6 +1059,7 @@ app.put(
         normalizeCurrency(currency),
         normalizedDueDate ? normalizedDueDate : null,
         is_active === false ? 0 : 1,
+        normalizePaymentTargetRole(target_role),
         req.params.id,
       ],
     );
@@ -1037,13 +1161,13 @@ app.get(
       `
         SELECT pd.*
         FROM payment_dues pd
-        WHERE pd.is_active = 1
+        WHERE (pd.is_active = 1 AND (pd.target_role = ? OR pd.target_role = 'all'))
            OR EXISTS (
              SELECT 1 FROM payments p WHERE p.due_id = pd.id AND p.owner_id = ?
            )
         ORDER BY pd.due_date IS NULL, pd.due_date ASC, pd.created_at DESC
       `,
-      [req.user.id],
+      [req.user.role, req.user.id],
     );
 
     const payments = await queryAll(
@@ -1100,7 +1224,7 @@ app.post(
     }
 
     const due = await queryOne(
-      'SELECT id, title, amount, currency, due_date, is_active FROM payment_dues WHERE id = ? LIMIT 1',
+      'SELECT id, title, amount, currency, due_date, is_active, target_role FROM payment_dues WHERE id = ? LIMIT 1',
       [due_id],
     );
     if (!due) {
@@ -1109,6 +1233,10 @@ app.post(
 
     if (Number(due.is_active) !== 1) {
       return res.status(400).json({ error: 'This payment due is inactive' });
+    }
+
+    if (due.target_role && due.target_role !== 'all' && due.target_role !== req.user.role) {
+      return res.status(403).json({ error: 'This payment due is not available for your role' });
     }
 
     const existingPaid = await queryOne(
@@ -1291,6 +1419,59 @@ app.get(
 );
 
 app.post(
+  '/api/uploads/images',
+  authenticateToken,
+  requireParticipant,
+  imageUpload.single('image'),
+  asyncRoute(async (req, res) => {
+    if (!requireS3Config(res)) {
+      return undefined;
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'Image file is required' });
+    }
+
+    const formId = String(req.body?.form_id || '').trim();
+    if (!formId) {
+      return res.status(400).json({ error: 'form_id is required' });
+    }
+
+    const form = await queryOne('SELECT id, title, is_published, target_role FROM forms WHERE id = ? LIMIT 1', [formId]);
+    if (!form) {
+      return res.status(404).json({ error: 'Form not found' });
+    }
+
+    if (Number(form.is_published) !== 1) {
+      return res.status(403).json({ error: 'Form is not published' });
+    }
+
+    if (form.target_role !== 'all' && form.target_role !== req.user.role) {
+      return res.status(403).json({ error: 'This form is not available for your role' });
+    }
+
+    const extension = getImageExtension(req.file.mimetype);
+    const formFolder = createSafeFileBase(form.title);
+    const fileBase = createSafeFileBase(req.body?.player_name);
+    const key = `form-uploads/${formFolder}/${fileBase}_${Date.now()}.${extension}`;
+
+    await s3Client.send(
+      new PutObjectCommand({
+        Bucket: S3_BUCKET_NAME,
+        Key: key,
+        Body: req.file.buffer,
+        ContentType: req.file.mimetype,
+      }),
+    );
+
+    return res.status(201).json({
+      key,
+      url: buildS3Url(key),
+    });
+  }),
+);
+
+app.post(
   '/api/forms',
   authenticateToken,
   requireAdmin,
@@ -1302,12 +1483,25 @@ app.post(
 
     const normalizedTargetRole = ['owner', 'player', 'all'].includes(target_role) ? target_role : 'owner';
     const id = randomUUID();
+    let preparedSchema;
+    try {
+      preparedSchema = await prepareSchemaPaymentDues({
+        schema,
+        formId: id,
+        formTitle: title,
+        targetRole: normalizedTargetRole,
+        adminId: req.user.id,
+      });
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid payment due field' });
+    }
+
     await execute(
       'INSERT INTO forms (id, title, description, schema_json, is_published, target_role) VALUES (?, ?, ?, ?, ?, ?)',
-      [id, title, description || '', JSON.stringify(schema), is_published ? 1 : 0, normalizedTargetRole],
+      [id, title, description || '', JSON.stringify(preparedSchema), is_published ? 1 : 0, normalizedTargetRole],
     );
 
-    return res.json({ id });
+    return res.json({ id, schema: preparedSchema });
   }),
 );
 
@@ -1325,9 +1519,22 @@ app.put(
     const normalizedTargetRole = ['owner', 'player', 'all'].includes(target_role)
       ? target_role
       : (existingForm.target_role || 'owner');
+    let preparedSchema;
+    try {
+      preparedSchema = await prepareSchemaPaymentDues({
+        schema,
+        formId: req.params.id,
+        formTitle: title,
+        targetRole: normalizedTargetRole,
+        adminId: req.user.id,
+      });
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid payment due field' });
+    }
+
     await execute(
       'UPDATE forms SET title = ?, description = ?, schema_json = ?, is_published = ?, target_role = ? WHERE id = ?',
-      [title, description || '', JSON.stringify(schema), is_published ? 1 : 0, normalizedTargetRole, req.params.id],
+      [title, description || '', JSON.stringify(preparedSchema), is_published ? 1 : 0, normalizedTargetRole, req.params.id],
     );
     return res.json({ success: true });
   }),
@@ -1350,6 +1557,37 @@ app.post(
     const { form_id, data } = req.body || {};
     if (!form_id) {
       return res.status(400).json({ error: 'form_id is required' });
+    }
+
+    const form = await queryOne('SELECT id, is_published, target_role, schema_json FROM forms WHERE id = ? LIMIT 1', [form_id]);
+    if (!form) {
+      return res.status(404).json({ error: 'Form not found' });
+    }
+
+    if (req.user.role !== 'admin') {
+      if (Number(form.is_published) !== 1) {
+        return res.status(403).json({ error: 'Form is not published' });
+      }
+
+      if (form.target_role !== 'all' && form.target_role !== req.user.role) {
+        return res.status(403).json({ error: 'This form is not available for your role' });
+      }
+    }
+
+    const schema = parseJsonField(form.schema_json, { steps: [] });
+    const requiredPaymentDueIds = getRequiredPaymentDueIds(schema);
+    if (requiredPaymentDueIds.length > 0) {
+      const placeholders = requiredPaymentDueIds.map(() => '?').join(', ');
+      const paidRows = await queryAll(
+        `SELECT DISTINCT due_id FROM payments WHERE owner_id = ? AND status = 'paid' AND due_id IN (${placeholders})`,
+        [req.user.id, ...requiredPaymentDueIds],
+      );
+      const paidDueIds = new Set(paidRows.map((payment) => payment.due_id));
+      const missingPayment = requiredPaymentDueIds.find((dueId) => !paidDueIds.has(dueId));
+
+      if (missingPayment) {
+        return res.status(400).json({ error: 'Please complete the required payment before submitting this form' });
+      }
     }
 
     const id = randomUUID();
@@ -1464,6 +1702,15 @@ app.get(
 
 app.use((err, _req, res, _next) => {
   console.error(err);
+  if (err instanceof multer.MulterError) {
+    const message = err.code === 'LIMIT_FILE_SIZE' ? 'Image must be smaller than 1MB' : err.message;
+    return res.status(400).json({ error: message });
+  }
+
+  if (err?.message === 'Only JPG, JPEG, and PNG images are allowed') {
+    return res.status(400).json({ error: err.message });
+  }
+
   res.status(500).json({ error: 'Internal server error' });
 });
 

@@ -151,7 +151,7 @@ const playerFormSchema = {
     {
       title: 'Player Information',
       fields: [
-        { id: 'playerPhoto', type: 'text', label: 'Player Photo (URL or drive link)', required: true },
+        { id: 'playerPhoto', type: 'image', label: 'Player Photo', required: true },
         { id: 'fullName', type: 'text', label: 'Full Name', required: true },
         { id: 'emailId', type: 'email', label: 'Email ID', required: true },
         { id: 'mobileNumber', type: 'tel', label: 'Mobile Number', required: true },
@@ -342,6 +342,9 @@ async function createTables() {
       currency VARCHAR(10) NOT NULL DEFAULT 'INR',
       due_date DATETIME NULL DEFAULT NULL,
       is_active TINYINT(1) NOT NULL DEFAULT 1,
+      target_role ENUM('owner', 'player', 'all') NOT NULL DEFAULT 'all',
+      source_form_id CHAR(36) NULL,
+      source_field_id VARCHAR(120) NULL,
       created_by CHAR(36) NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       CONSTRAINT fk_payment_dues_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
@@ -473,6 +476,20 @@ async function ensurePaymentDueColumns() {
 
   if (!columnNames.has('is_active')) {
     await pool.query('ALTER TABLE payment_dues ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1');
+  }
+
+  if (!columnNames.has('target_role')) {
+    await pool.query("ALTER TABLE payment_dues ADD COLUMN target_role ENUM('owner', 'player', 'all') NOT NULL DEFAULT 'all'");
+  } else {
+    await pool.query("ALTER TABLE payment_dues MODIFY COLUMN target_role ENUM('owner', 'player', 'all') NOT NULL DEFAULT 'all'");
+  }
+
+  if (!columnNames.has('source_form_id')) {
+    await pool.query('ALTER TABLE payment_dues ADD COLUMN source_form_id CHAR(36) NULL');
+  }
+
+  if (!columnNames.has('source_field_id')) {
+    await pool.query('ALTER TABLE payment_dues ADD COLUMN source_field_id VARCHAR(120) NULL');
   }
 
   if (!columnNames.has('created_by')) {
