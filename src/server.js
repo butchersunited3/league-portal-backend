@@ -499,24 +499,22 @@ app.post(
     const passwordHash = await bcrypt.hash(String(password), 10);
 
     await execute(
-      'INSERT INTO users (id, name, email, phone, password_hash, auth_provider, role, email_verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)',
-      [id, String(name).trim(), normalizedEmail, String(phone).trim(), passwordHash, 'password', role],
+      'INSERT INTO users (id, name, email, phone, password_hash, auth_provider, role, email_verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, String(name).trim(), normalizedEmail, String(phone).trim(), passwordHash, 'password', role, null],
     );
 
-    const user = {
-      id,
-      name: String(name).trim(),
-      email: normalizedEmail,
-      phone: String(phone).trim(),
-      role,
-      auth_provider: 'password',
-      email_verified_at: new Date(),
-    };
-    const payload = serializeUser(user);
+    const user = { id, name: String(name).trim(), email: normalizedEmail, phone: String(phone).trim(), role, auth_provider: 'password' };
+    try {
+      await issueEmailVerification(user);
+    } catch (error) {
+      await execute('DELETE FROM users WHERE id = ?', [id]);
+      throw error;
+    }
+
     return res.status(201).json({
-      token: createToken(payload),
-      user: payload,
-      message: 'Registration successful.',
+      requiresEmailVerification: true,
+      email: normalizedEmail,
+      message: 'Registration successful. We sent a verification code to your email.',
     });
   }),
 );
@@ -611,7 +609,7 @@ app.post(
 
     const user = await queryOne(
       `
-        SELECT id, email, email_verified_at, email_verification_token_hash, email_verification_expires_at
+        SELECT id, name, email, phone, role, auth_provider, email_verified_at, email_verification_token_hash, email_verification_expires_at
         FROM users
         WHERE email = ?
         LIMIT 1
@@ -624,7 +622,14 @@ app.post(
     }
 
     if (user.email_verified_at) {
-      return res.json({ success: true, alreadyVerified: true, message: 'Email already verified. You can sign in now.' });
+      const payload = serializeUser(user);
+      return res.json({
+        success: true,
+        alreadyVerified: true,
+        token: createToken(payload),
+        user: payload,
+        message: 'Email already verified.',
+      });
     }
 
     if (!user.email_verification_expires_at || new Date(user.email_verification_expires_at).getTime() < Date.now()) {
@@ -646,7 +651,19 @@ app.post(
       [user.id],
     );
 
-    return res.json({ success: true, message: 'Email verified successfully. You can sign in now.' });
+    const payload = serializeUser({
+      ...user,
+      email_verified_at: new Date(),
+      email_verification_token_hash: null,
+      email_verification_expires_at: null,
+    });
+
+    return res.json({
+      success: true,
+      token: createToken(payload),
+      user: payload,
+      message: 'Email verified successfully.',
+    });
   }),
 );
 
