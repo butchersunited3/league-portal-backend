@@ -5,9 +5,9 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { randomUUID } from 'crypto';
-import multer from 'multer';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { execute, initDatabase, queryAll, queryOne } from './db.js';
+import { createRequire } from 'module';
 
 const app = express();
 const PORT = Number(process.env.PORT || 4000);
@@ -47,21 +47,39 @@ app.use(
 )
 app.use(express.json());
 
-const imageUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 1024 * 1024 - 1,
-    files: 1,
-  },
-  fileFilter: (_req, file, callback) => {
-    if (['image/jpeg', 'image/png'].includes(file.mimetype)) {
-      callback(null, true);
-      return;
-    }
+const require = createRequire(import.meta.url);
+let multer = null;
 
-    callback(new Error('Only JPG, JPEG, and PNG images are allowed'));
-  },
-});
+try {
+  const multerPackage = require('multer');
+  multer = multerPackage?.default || multerPackage;
+} catch {
+  multer = null;
+}
+
+const imageUpload = multer
+  ? multer({
+      storage: multer.memoryStorage(),
+      limits: {
+        fileSize: 1024 * 1024 - 1,
+        files: 1,
+      },
+      fileFilter: (_req, file, callback) => {
+        if (['image/jpeg', 'image/png'].includes(file.mimetype)) {
+          callback(null, true);
+          return;
+        }
+
+        callback(new Error('Only JPG, JPEG, and PNG images are allowed'));
+      },
+    })
+  : {
+      single: () => (_req, res) => {
+        res.status(503).json({
+          error: 'Image upload dependency is not installed on the server. Install backend packages and retry.',
+        });
+      },
+    };
 
 const s3Client = new S3Client({ region: AWS_REGION });
 
@@ -1722,7 +1740,7 @@ app.get(
 
 app.use((err, _req, res, _next) => {
   console.error(err);
-  if (err instanceof multer.MulterError) {
+  if (multer && err instanceof multer.MulterError) {
     const message = err.code === 'LIMIT_FILE_SIZE' ? 'Image must be smaller than 1MB' : err.message;
     return res.status(400).json({ error: message });
   }
