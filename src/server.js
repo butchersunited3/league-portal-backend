@@ -300,10 +300,6 @@ function validatePassword(password) {
   return null;
 }
 
-function normalizeRequestedRole(value) {
-  return value === 'player' ? 'player' : 'owner';
-}
-
 function hashValue(value) {
   return crypto.createHash('sha256').update(String(value)).digest('hex');
 }
@@ -478,7 +474,7 @@ app.get('/health', (_req, res) => {
 app.post(
   '/api/auth/register',
   asyncRoute(async (req, res) => {
-    const { name, email, phone, password, role: requestedRole } = req.body || {};
+    const { name, email, phone, password } = req.body || {};
     if (!name || !email || !phone || !password) {
       return res.status(400).json({ error: 'name, email, phone and password are required' });
     }
@@ -494,7 +490,7 @@ app.post(
     }
 
     const countRow = await queryOne('SELECT COUNT(*) AS count FROM users');
-    const role = Number(countRow?.count || 0) === 0 ? 'admin' : normalizeRequestedRole(requestedRole);
+    const role = Number(countRow?.count || 0) === 0 ? 'admin' : 'player';
     const id = randomUUID();
     const passwordHash = await bcrypt.hash(String(password), 10);
 
@@ -553,8 +549,7 @@ app.post(
 app.post(
   '/api/auth/google',
   asyncRoute(async (req, res) => {
-    const { credential, role: requestedRole } = req.body || {};
-    const desiredRole = normalizeRequestedRole(requestedRole);
+    const { credential } = req.body || {};
     const googleUser = await verifyGoogleCredential(credential);
 
     let user = await queryOne('SELECT * FROM users WHERE google_sub = ? LIMIT 1', [googleUser.sub]);
@@ -568,15 +563,15 @@ app.post(
 
       if (emailMatch) {
         await execute(
-          "UPDATE users SET google_sub = ?, name = CASE WHEN TRIM(COALESCE(name, '')) = '' THEN ? ELSE name END, email_verified_at = COALESCE(email_verified_at, CURRENT_TIMESTAMP), role = CASE WHEN role = 'admin' THEN role ELSE ? END WHERE id = ?",
-          [googleUser.sub, googleUser.name, desiredRole, emailMatch.id],
+          "UPDATE users SET google_sub = ?, name = CASE WHEN TRIM(COALESCE(name, '')) = '' THEN ? ELSE name END, email_verified_at = COALESCE(email_verified_at, CURRENT_TIMESTAMP) WHERE id = ?",
+          [googleUser.sub, googleUser.name, emailMatch.id],
         );
         user = await queryOne('SELECT * FROM users WHERE id = ? LIMIT 1', [emailMatch.id]);
       } else {
         const id = randomUUID();
         const passwordHash = await bcrypt.hash(randomUUID(), 10);
         const countRow = await queryOne('SELECT COUNT(*) AS count FROM users');
-        const role = Number(countRow?.count || 0) === 0 ? 'admin' : desiredRole;
+        const role = Number(countRow?.count || 0) === 0 ? 'admin' : 'player';
 
         await execute(
           'INSERT INTO users (id, name, email, phone, password_hash, auth_provider, google_sub, role, email_verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)',

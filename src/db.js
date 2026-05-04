@@ -301,7 +301,7 @@ async function createTables() {
       email_verification_expires_at DATETIME NULL DEFAULT NULL,
       reset_password_token_hash VARCHAR(255) NULL,
       reset_password_expires_at DATETIME NULL DEFAULT NULL,
-      role ENUM('admin', 'owner', 'player') NOT NULL DEFAULT 'owner',
+      role ENUM('admin', 'owner', 'player') NOT NULL DEFAULT 'player',
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -438,7 +438,7 @@ async function ensureUserColumns() {
     );
   }
 
-  await pool.query("ALTER TABLE users MODIFY COLUMN role ENUM('admin', 'owner', 'player') NOT NULL DEFAULT 'owner'");
+  await pool.query("ALTER TABLE users MODIFY COLUMN role ENUM('admin', 'owner', 'player') NOT NULL DEFAULT 'player'");
 }
 
 async function ensureFormColumns() {
