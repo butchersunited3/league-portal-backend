@@ -275,6 +275,46 @@ async function createRazorpayOrder({ amount, currency, receipt, notes }) {
   return data;
 }
 
+async function fetchRazorpayOrderPayments(orderId) {
+  const response = await fetch(`https://api.razorpay.com/v1/orders/${encodeURIComponent(orderId)}/payments`, {
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${RAZORPAY_KEY_ID}:${RAZORPAY_KEY_SECRET}`).toString('base64')}`,
+    },
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data?.error?.description || 'Failed to fetch Razorpay order payments');
+  }
+
+  return Array.isArray(data?.items) ? data.items : [];
+}
+
+function pickSettledRazorpayPayment(payments) {
+  const sortedPayments = [...payments].sort((a, b) => Number(b?.created_at || 0) - Number(a?.created_at || 0));
+  const capturedPayment = sortedPayments.find((payment) => payment?.status === 'captured');
+  if (capturedPayment) {
+    return { status: 'paid', payment: capturedPayment };
+  }
+
+  const refundedPayment = sortedPayments.find((payment) => payment?.status === 'refunded');
+  if (refundedPayment) {
+    return { status: 'refunded', payment: refundedPayment };
+  }
+
+  const hasActivePayment = sortedPayments.some((payment) => ['created', 'authorized'].includes(payment?.status));
+  if (hasActivePayment) {
+    return { status: 'pending', payment: sortedPayments[0] || null };
+  }
+
+  const failedPayment = sortedPayments.find((payment) => payment?.status === 'failed');
+  if (failedPayment) {
+    return { status: 'failed', payment: failedPayment };
+  }
+
+  return { status: 'pending', payment: sortedPayments[0] || null };
+}
+
 function verifyRazorpaySignature({ orderId, paymentId, signature }) {
   const digest = crypto
     .createHmac('sha256', RAZORPAY_KEY_SECRET)
@@ -1113,6 +1153,90 @@ app.get(
         due_is_active: Number(payment.due_is_active) === 1,
       })),
     );
+  }),
+);
+
+app.post(
+  '/api/admin/payments/sync-pending',
+  authenticateToken,
+  requireAdmin,
+  asyncRoute(async (_req, res) => {
+    if (!requireRazorpayConfig(res)) {
+      return undefined;
+    }
+
+    const pendingPayments = await queryAll(
+      `
+        SELECT id, gateway_order_id
+        FROM payments
+        WHERE status = 'pending'
+          AND gateway = 'razorpay'
+          AND gateway_order_id IS NOT NULL
+        ORDER BY created_at ASC
+      `,
+    );
+
+    const summary = {
+      checked: pendingPayments.length,
+      updated: 0,
+      paid: 0,
+      failed: 0,
+      refunded: 0,
+      still_pending: 0,
+      errors: [],
+    };
+
+    for (const payment of pendingPayments) {
+      try {
+        const razorpayPayments = await fetchRazorpayOrderPayments(payment.gateway_order_id);
+        const settlement = pickSettledRazorpayPayment(razorpayPayments);
+        const gatewayPaymentId = settlement.payment?.id || null;
+        const gatewayCreatedAt = Number(settlement.payment?.created_at || 0) || null;
+        const failureReason =
+          settlement.payment?.error_description ||
+          settlement.payment?.error_reason ||
+          settlement.payment?.error_code ||
+          null;
+
+        if (settlement.status === 'pending') {
+          summary.still_pending += 1;
+          continue;
+        }
+
+        await execute(
+          `
+            UPDATE payments
+            SET status = ?,
+                gateway_payment_id = COALESCE(?, gateway_payment_id),
+                failure_reason = ?,
+                paid_at = CASE
+                  WHEN ? = 'paid' THEN COALESCE(paid_at, FROM_UNIXTIME(?), CURRENT_TIMESTAMP)
+                  ELSE paid_at
+                END
+            WHERE id = ? AND status = 'pending'
+          `,
+          [
+            settlement.status,
+            gatewayPaymentId,
+            settlement.status === 'failed' ? failureReason : null,
+            settlement.status,
+            gatewayCreatedAt,
+            payment.id,
+          ],
+        );
+
+        summary.updated += 1;
+        summary[settlement.status] += 1;
+      } catch (error) {
+        summary.errors.push({
+          payment_id: payment.id,
+          order_id: payment.gateway_order_id,
+          error: error instanceof Error ? error.message : 'Unable to sync payment',
+        });
+      }
+    }
+
+    return res.json(summary);
   }),
 );
 
